@@ -1,0 +1,810 @@
+Its better not to use ViewModel, Its a very tricky framework, we discuss the problems and consequences of using  Dagger in ViewModel.
+
+class ViewModelActivity : BaseActivity() {
+
+    @Inject lateinit var screensNavigator: ScreensNavigator
+    @Inject lateinit var myViewModel: MyViewModel           //Injected by Dagger
+    private lateinit var toolbar: MyToolbar
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        injector.inject(this)
+        super.onCreate(savedInstanceState)
+
+        setContentView(R.layout.layout_view_model)
+        toolbar = findViewById(R.id.toolbar)
+        toolbar.setNavigateUpListener {
+            screensNavigator.navigateBack()
+        }
+        myViewModel.questions.observe(this, Observer {    // we observe on this data, if theres a change then this 	
+        												  // observer is called
+            questions -> Toast.makeText(this, "Fetched ${questions.size} questions", Toast.LENGTH_SHORT).show()
+        })
+    }
+
+    companion object {
+        fun start(context: Context) {
+            val intent = Intent(context, ViewModelActivity::class.java)
+            context.startActivity(intent)
+        }
+    }
+}
+
+
+
+class MyViewModel @Inject constructor(                   // this object is added automatically to Dagger Object graph
+        private val fetchQuestionsUseCase: FetchQuestionsUseCase
+        ): ViewModel() {
+    private val _questions = MutableLiveData<List<Question>>()
+    val questions: LiveData<List<Question>> = _questions
+
+    init {
+        viewModelScope.launch {
+            val result = fetchQuestionsUseCase.fetchLatestQuestions()
+            if (result is FetchQuestionsUseCase.Result.Success)
+                _questions.value = result.questions
+            else
+                throw RuntimeException("fetch Failed")
+        }
+    }
+}
+
+
+If we use the automatic discovery of service for ViewModel and inject it using Dagger in activity(normal approach)
+
+Usually ViewModel instance used inside activity are controllers and its instance is retained across configuration changes of activity.
+
+Problem :: If we follow the above normal dagger approach to inject viewModel instance . onConfiguration change of activity, ViewModel instance is not retained by activity and viewModel instance is recreated again. 
+
+
+ViewModel are not supposed to recreate, Android promise to maintain ViewModel instance on onConfiguration changes(whenever activity is destroyed and recreated), activity will be re-registered with the same viewModel instance and get the necessary data from viewModel and showcase on the UI elements in the activity. ViewModel instance will only be destroyed by android framework on the final destroy of the activity. 
+
+Therefore in order to maintain the Viewmodel instance by android framework until the total lifetime of the activity. Inside activity, Android framework suggest to create the viewModel instance through the ViewModelProviders and ViewModelFactory, Additional to ViewModel class, we are supposed to define viewModelFactory class and provide the viewModelFactory class to Dagger, Inside Activity we can get the viewModelFactory instance injected by Dagger and using ViewModelProviders we can get the instance of ViewModel. 
+
+To solve this problem of recreation of viewModel instance of configuration change of activity(activity recreated). 
+we define ViewModelFactory and provide it to Dagger and get/inject the instance by Dagger inside the activity.
+
+
+    class Factory @Inject constructor(
+            private val fetchQuestionsUseCase: FetchQuestionsUseCase
+            ) : ViewModelProvider.Factory {
+        override fun <T : ViewModel?> create(modelClass: Class<T>): T {
+            return MyViewModel(fetchQuestionsUseCase) as T
+        }
+    }
+
+now inject the Factory inside the activity and using this injected factory instance and ViewModelProviders, we can get the ViewModel instance and its life cycle is maintained by ANdroid framework in adjacent to the Activity lifecycle.
+
+class ViewModelActivity : BaseActivity() {
+
+    @Inject lateinit var screensNavigator: ScreensNavigator
+    @Inject lateinit var myViewModelFactory: MyViewModel.Factory   //ViewModeFactory instnace is injected by Dagger
+    lateinit var myViewModel: MyViewModel
+
+        override fun onCreate(savedInstanceState: Bundle?) {
+        injector.inject(this)
+        super.onCreate(savedInstanceState)
+
+        setContentView(R.layout.layout_view_model)
+        toolbar = findViewById(R.id.toolbar)
+        toolbar.setNavigateUpListener {
+            screensNavigator.navigateBack()
+        }
+        myViewModel = ViewModelProvider(this,  myViewModelFactory).get(MyViewModel::class.java) // here get the 
+        																						// viewModel 
+        																						// instance, now
+        								// this instance life time is maintained by android framework in adjacent
+        								//to the lifetime of activity, this instance is not recreated on activity
+        								//configuration changes.
+
+        // we register for LiveData variable inside the viewModel, and the change in value of the variable is
+        // notified to this activity though the registered Observer passed inside.
+        myViewModel.questions.observe(this, Observer {
+            questions -> Toast.makeText(this, "Fetched ${questions.size} questions", Toast.LENGTH_SHORT).show()
+        })
+
+    }
+}
+
+
+// Future Problems on ViewModel.Factory 
+
+      class Factory @Inject constructor(
+            private val fetchQuestionsUseCase: Provider<FetchQuestionsUseCase>
+            ) : ViewModelProvider.Factory {
+        override fun <T : ViewModel?> create(modelClass: Class<T>): T {
+            return MyViewModel(fetchQuestionsUseCase.get()) as T
+        }
+    }
+
+If we add the dependencies list in future, while we add dependency into the constructor of MyViewModel class, we are forced to add those dependencies into the create() method of factory also, Inside create() method we create the instance of MyViewModel(), we have to supply the newly added dependencies when creating the Instance of MyViewModel. Code changes has to be done in editing the constructor of MyViewModel, Factory constructor and also inside the create() method where we instantiate and return the instance of MyViewModel.  (Lot of maintenence overhead)
+
+For Eg: If we add fetchQuestionDetailsUseCase as a new dependency for MyViewModel, code changes appears as below
+
+class MyViewModel constructor(
+        private val fetchQuestionsUseCase: FetchQuestionsUseCase
+        private val fetchQuestionDetailsUseCase: FetchQuestionDetailsUseCase // new dependency added here
+        ): ViewModel() {
+    private val _questions = MutableLiveData<List<Question>>()
+    val questions: LiveData<List<Question>> = _questions
+
+    init {
+        viewModelScope.launch {
+            val result = fetchQuestionsUseCase.fetchLatestQuestions()
+            if (result is FetchQuestionsUseCase.Result.Success)
+                _questions.value = result.questions
+            else
+                throw RuntimeException("fetch Failed")
+        }
+    }
+
+    class Factory @Inject constructor(
+            private val fetchQuestionsUseCase: Provider<FetchQuestionsUseCase>,
+            private val fetchQuestionDetailsUseCase: Provider<FetchQuestionDetailsUseCase> // new dependency
+            ) : ViewModelProvider.Factory {
+        override fun <T : ViewModel?> create(modelClass: Class<T>): T {            // new dependency added here
+            return MyViewModel(fetchQuestionsUseCase.get(), fetchQuestionDetailsUseCase.get()) as T  
+        }
+    }
+}
+
+
+Instead of Injecting the MyViewModel dependencies into the factory and creating the instance of MyViewModel inside
+factory. where we need to add / change code in constructor of Factory and inside create() method. 
+
+Injecting dependencies objects (fetchQuestionsUseCase, fetchQuestionDetailsUseCase) while creating the instance of MyViewModel inside create() method of Factory, we fail to follow "Law of Demeter" where we shouldnt inject / pass the dependencies objects, we only need to create instance of MyViewModel().
+
+Instead we can use automatic service discovery from Dagger, we can inject the MyViewModel as a constructor injection into the Factory and we can use Providers to get the right instance from the provider, which we get based on the object available in object graph / create new instance based on the charecteristics defined for the service.
+
+MyViewModel instance should also be automatic service discoverable(using @Inject constructor), so that if we define MyViewModel is passed as a construtor injection parameter of Factory, then we can directly return the instance for the client who access the Factory.
+
+class MyViewModel @Inject constructor(
+        private val fetchQuestionsUseCase: FetchQuestionsUseCase
+        private val fetchQuestionDetailsUseCase: FetchQuestionDetailsUseCase <-- only place to add dependency
+        ): ViewModel() {
+    private val _questions = MutableLiveData<List<Question>>()
+    val questions: LiveData<List<Question>> = _questions
+
+    init {
+        viewModelScope.launch {
+            val result = fetchQuestionsUseCase.fetchLatestQuestions()
+            if (result is FetchQuestionsUseCase.Result.Success)
+                _questions.value = result.questions
+            else
+                throw RuntimeException("fetch Failed")
+        }
+    }
+
+    class Factory @Inject constructor(
+            private val myViewModel: Provider<MyViewModel>
+            ) : ViewModelProvider.Factory {
+        override fun <T : ViewModel?> create(modelClass: Class<T>): T {
+            return myViewModel.get() as T    // no need to keep on add dependencies for MyViewModel and follows 
+            								// "law of Demeter"
+        }
+    }
+}
+
+"""Henceforth, to add new dependencies for MyViewModel for construction, we just need to add / edit only in the constructor of MyViewModel, no need to change in Factory of MyViewModel.""" - Now easiter maintenence of code for the Future.
+
+
+---------------------------------------------------------------------------------------------------------
+************************* Centralized Factory for ViewModels ********************************************
+---------------------------------------------------------------------------------------------------------
+
+If we have multiple ViewModels in our app and want a centralized factory instead of having factory for each ViewModels.
+
+We create a new ViewModel class as MyViewModel2
+
+class MyViewModel2 @Inject constructor(): ViewModel() {
+    private val _questions = MutableLiveData<List<Question>>()
+    val questions: LiveData<List<Question>> = _questions
+}
+
+class MyViewModel @Inject constructor(
+        private val fetchQuestionsUseCase: FetchQuestionsUseCase,
+        private val fetchQuestionDetailsUseCase: FetchQuestionDetailsUseCase
+        ): ViewModel() {
+    private val _questions = MutableLiveData<List<Question>>()
+    val questions: LiveData<List<Question>> = _questions
+
+    init {
+        viewModelScope.launch {
+            val result = fetchQuestionsUseCase.fetchLatestQuestions()
+            if (result is FetchQuestionsUseCase.Result.Success)
+                _questions.value = result.questions
+            else
+                throw RuntimeException("fetch Failed")
+        }
+    }
+}
+
+//create a common Factory which can return instance of ViewModels defined above, 
+
+
+class ViewModelFactory @Inject constructor(
+        private val viewModel1Provider: Provider<MyViewModel>, // provided by Dagger and ViewModelFactory instance
+        private val viewModel2Provider: Provider<MyViewModel2> // is available in object graph of Dagger
+): ViewModelProvider.Factory {
+    override fun <T : ViewModel?> create(modelClass: Class<T>): T {
+        return when(modelClass) {
+            MyViewModel::class.java -> viewModel1Provider.get() as T
+            MyViewModel2::class.java -> viewModel2Provider.get() as T
+            else -> throw RuntimeException("unsupported viewmodel type : $modelClass")
+        }
+    }
+}
+
+// now client can get the factory instance from Dagger and get the respective viewModel instances
+
+class ViewModelActivity : BaseActivity() {
+
+    @Inject lateinit var screensNavigator: ScreensNavigator
+    @Inject lateinit var myViewModelFactory: ViewModelFactory 		//will be injected by Dagger
+    lateinit var myViewModel: MyViewModel
+    lateinit var myViewModel2: MyViewModel2
+    private lateinit var toolbar: MyToolbar
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        injector.inject(this)
+        super.onCreate(savedInstanceState)
+
+        setContentView(R.layout.layout_view_model)
+        toolbar = findViewById(R.id.toolbar)
+        toolbar.setNavigateUpListener {
+            screensNavigator.navigateBack()
+        }											// MyViewModel::class.java will be passed to the 
+                                                    // create() method of the Factory to get the viewModel instance
+        myViewModel = ViewModelProvider(this, myViewModelFactory).get(MyViewModel::class.java)
+        myViewModel2 = ViewModelProvider(this, myViewModelFactory).get(MyViewModel2::class.java)
+
+        myViewModel.questions.observe(this, Observer {
+            questions -> Toast.makeText(this, "Fetched ${questions.size} questions", Toast.LENGTH_SHORT).show()
+        })
+}
+
+---------------------------------------------------------------------------------------------------------
+********************************************** MULTIBINDINGS ********************************************
+---------------------------------------------------------------------------------------------------------
+Concern - Currently, the constructor of ViewModelFactory takes two viewModels as constructor arguments and requested viewModel will be returned from create() method using the injected viewModels into the constructor. 
+
+class ViewModelFactory @Inject constructor(
+        private val viewModel1Provider: Provider<MyViewModel>,
+        private val viewModel2Provider: Provider<MyViewModel2>
+): ViewModelProvider.Factory {
+    override fun <T : ViewModel?> create(modelClass: Class<T>): T {
+        return when(modelClass) {
+            MyViewModel::class.java -> viewModel1Provider.get() as T
+            MyViewModel2::class.java -> viewModel2Provider.get() as T
+            else -> throw RuntimeException("unsupported viewmodel type : $modelClass")
+        }
+    }
+}
+
+In Future if my application grows and if number of viewModels increase(~50), I cannot pass all of those into the constructor(~50) of ViewModelFactory and cannot create ~50 viewModel conditions inside create() method to find the requested one and return the requested instance.
+
+Dagger can solve this problem using a convention, called ""MultiBinding"" convention. using (@IntoMap, @Binds, @MapKey) (Its very complex concept). Better to avoid this concept in using in projects, as its complex to Readability and Explain it to the usage of it in Projects.
+
+MultiBinding::
+
+Multibindings need ""Module"", to define the mappings of Objects, we define a Module call "ViewModelsModule"
+
+@Module
+abstract class ViewModelModule {
+
+}
+
+we define @Binds abstract methods to convert one type to another type. we define the mapping of Custom defined ViewModels into a Generic ViewModel
+
+@Module
+abstract class ViewModelModule {
+    @Binds
+    abstract fun viewModel(myViewModel: MyViewModel) : ViewModel
+
+    @Binds
+    abstract fun viewModelTwo(myViewModel2: MyViewModel2) : ViewModel
+}
+
+we cant just produce different services(MyViewModel, MyViewModel2) into a same type(ViewModel), Dagger cannot differentiate the same type return objects(ViewModel).
+
+we need to create a annotation file which defined the Map key(unique key which is based on the File name of our custom defined viewModels)
+
+@MapKey
+annotation class ViewModelKey(val value: KClass<out ViewModel>) { // out ViewModel is we can provide "Kotlin 
+																  // subclass of ViewModel"
+
+}
+
+we assign the custom annotation to the defined methods in module to make Dagger to identify the between the difference between the defined method(defined methods return the same type (ViewModel)).
+
+
+define @IntoMap annotation to let dagger to create a Map of Objects where the value of the Map will be ViewModel instances which is returned from the methods and Key will be the name of the custom defined ViewModel classes(MyViewModel, MyViewModel2)
+
+Dagger by parsing the below provide services defined in the ViewModelModule, will create a Map of CustomViewModels
+
+@Module
+abstract class ViewModelModule {
+    @Binds
+    @IntoMap
+    @ViewModelKey(MyViewModel::class)
+    abstract fun viewModel(viewModel: ViewModel) : ViewModel
+
+    @Binds
+    @IntoMap
+    @ViewModelKey(MyViewModel2::class)
+    abstract fun viewModelTwo(viewModel2: MyViewModel2) : ViewModel
+}
+
+add the defined module in the presentationComponent to make the Dagger to use the Defined module.
+
+@PresentationScope
+@Subcomponent(modules = [ViewModelModule::class])
+interface PresentationComponent {
+    fun inject(fragment: QuestionsListFragment)
+    fun inject(activity: QuestionDetailsActivity)
+    fun inject(questionsListActivity: QuestionsListActivity)
+    fun inject(viewModelActivity: ViewModelActivity)
+}
+
+// entire setup was done for dagger to make the mapping of our custom defined viewmodels, its time to get the mapped objects and use it in our factory
+
+class ViewModelFactory @Inject constructor(
+      private val providers: Map<Class<out ViewModel>, Provider<ViewModel>>
+): ViewModelProvider.Factory {
+
+}
+
+ViewModelFactory instance is automatic service discovery created by dagger by injecting the dependencies(Map of customViewModel instance), we can use the map and return the rightful instance for the client
+
+class ViewModelFactory @Inject constructor(
+        private val providers: Map<Class<out ViewModel>, Provider<ViewModel>>
+): ViewModelProvider.Factory {
+    override fun <T : ViewModel?> create(modelClass: Class<T>): T {
+        val provider = providers[modelClass]
+        return provider.get() as T
+    }
+}
+
+modelClass is the class name used by the client for which they want to create instance of a custom viewmodel(MyViewModel, MyViewModel2)
+
+providers is a Map created by Dagger based on the methods defined in ViewModelModule, the Map can be null if no methods are defined in ViewModelModule. Hence provider.get() can cause a null pointer exception. we have to handle or use a "safe-cast" and elvis operator to handle it
+
+class ViewModelFactory @Inject constructor(
+        private val providers: Map<Class<out ViewModel>, Provider<ViewModel>>
+): ViewModelProvider.Factory {
+    override fun <T : ViewModel?> create(modelClass: Class<T>): T {
+        val provider = providers[modelClass]
+        return provider?.get() as T ?: throw RuntimeException("unsupported viewmodel type : $modelClass \")
+    }
+}
+
+we face build errors, to solve it we need a custom convention to be defined for the Provider<ViewModel> with @JvmSuppressWildCards
+
+class ViewModelFactory @Inject constructor(
+        private val providers: Map<Class<out ViewModel>, @JvmSuppressWildcards Provider<ViewModel>>
+): ViewModelProvider.Factory {
+    override fun <T : ViewModel?> create(modelClass: Class<T>): T {
+        val provider = providers[modelClass]
+        return provider?.get() as T ?: throw RuntimeException("unsupported viewmodel type : $modelClass \")
+    }
+}
+
+Now we can see that , ViewModelFactory will not know any details about the specific type of Custom ViewModels (MyViewModel, MyViewModel2) defined in our project. Even if more future CustomViewModel  defined, no changes has to be made in the ViewModelFactory.
+
+Only future changes has to be done in ViewModelModule, of adding extra abstract methods with annotations of the newly added Custom ViewModel.
+
+
+Better to avoid using multibindings, because of complex convention and low readability. 
+
+----------
+Summary (MultiBindings)
+----------
+*	@IntoMap annotation can be used to bind multiple services of the same type into Map data structure.
+
+*	Keys of the individual services in the Map are defined with a custom annotation, annotated with @MapKey annotation.
+
+*	Dagger will automaticaly will provide the Map: 
+	Map<key_type, Provider<service_type>>
+
+*	Use @JvmSuppressWildCards at injection site to make it work in kotlin.
+
+--------------------------------------------------------------------------------------------------------------------
+--------------------------------------------------------------------------------------------------------------------
+										ViewModel with SavedState and Dagger
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+to support ViewModel  SavedState handle, add depedencies in Gradle
+
+implementation 'androidx.lifecycle:lifecycle-viewmodel-savedstate:2.2.0'
+
+savedstate handle is used, because to save data on app process death, app process death can happen in 3 ways
+1. user voluntarily exit the screen permenantly
+2. User make configuration change of the activity, activity/fragment instance is recreated. But ViewModel is capable of handling this scenario and viewModel is not destroyed during the configuration change. newly created activity after configuration change will reconnect to viewModel.
+3. If application goes to background, on lowmemory if activity is killed. In this case even ViewModel is killed, the data can be saved and restored on ViewModel like the same way its handled in Activity(using onSaveInstanceState() and onRestoreInstanceState()) using SavedState-Handle of ViewModel we can manage to save and restore data even in Activity kill(killed because app moved to background and system went on low memory)
+
+when using savedstate in ViewModel, now ViewModel is passed(via constructor) with savedStateHandle(can be used to store and restore viewModel data on process kill). In order to pass savedStateHandle into the ViewModel constructor
+we cant use ViewModelProviders.Factory to construct ViewModels, now we have to use a dedicated Factory to construct ViewModel instance because viewModel has to get savedStatHandle.
+
+
+// MyViewModel code before introducing saveStateHandle
+
+class MyViewModel @Inject constructor(
+        private val fetchQuestionsUseCase: FetchQuestionsUseCase,
+        private val fetchQuestionDetailsUseCase: FetchQuestionDetailsUseCase
+): ViewModel() {
+
+    private val _questions = MutableLiveData<List<Question>>()
+    val questions: LiveData<List<Question>> = _questions
+
+    init {
+        viewModelScope.launch {
+            val result = fetchQuestionsUseCase.fetchLatestQuestions()
+            if (result is FetchQuestionsUseCase.Result.Success) {
+                _questions.value = result.questions
+            } else {
+                throw RuntimeException("fetch failed")
+            }
+        }
+    }
+}
+
+// MyViewModel code after introducing saveStateHandle
+
+
+class MyViewModel @Inject constructor(
+        private val fetchQuestionsUseCase: FetchQuestionsUseCase,
+        private val fetchQuestionDetailsUseCase: FetchQuestionDetailsUseCase,
+        private val savedStateHandle: SavedStateHandle       // variable passed by Framework to save data
+): ViewModel() {
+
+											// read the value from the savedStateHandle and initialize the data
+    private val _questions: MutableLiveData<List<Question>> = savedStateHandle.getLiveData("questions")
+    val questions: LiveData<List<Question>> = _questions
+
+    init {
+        viewModelScope.launch {
+            val result = fetchQuestionsUseCase.fetchLatestQuestions()
+            if (result is FetchQuestionsUseCase.Result.Success) {
+                _questions.value = result.questions  // this will automatically save value in savedStateHandle
+            } else {
+                throw RuntimeException("fetch failed")
+            }
+        }
+    }
+
+// we have changed code to handle the savedStateHandle passed value by framework into viewModel and saving and reading value into savedStateHandle variable.
+
+// now make changes that will help in Building this viewModel and help framework in passing the savedStateHandle into the ViewModel. // Make changes in ViewModelFactory
+
+
+// ViewModelFactory code before changes
+
+class ViewModelFactory @Inject constructor(
+        private val providers: Map<Class<out ViewModel>, @JvmSuppressWildcards Provider<ViewModel>>
+): ViewModelProvider.Factory {
+    override fun <T : ViewModel?> create(modelClass: Class<T>): T {
+        val provider = providers[modelClass]
+        return provider?.get() as T ?: throw RuntimeException("unsupported viewmodel type: $modelClass")
+    }
+
+}
+
+// ViewModelFactory extends ViewModelProvider.Factory, which supports in creating ViewModel Instance using ViewModelProviders. Now we need to extend a different parent class (AbstractSavedStateViewModelFactory) which will helpful in creating a ViewModelInstance which is provided with savedStateHandle by the framework and the ViewModel Instance data can also be stored and restored even after process kill.
+
+Currently the ViewModelFactory is implemented to support MultiBindings, we have to explicitly find the passed class and create the rightful instance.
+
+class ViewModelFactory @Inject constructor(
+        private val fetchQuestionDetailsUseCaseProvider: Provider<FetchQuestionDetailsUseCase>,
+        private val fetchQuestionUseCaseProvider: Provider<FetchQuestionsUseCase>,
+        savedStateRegistryOwner: SavedStateRegistryOwner
+): AbstractSavedStateViewModelFactory(savedStateRegistryOwner, null) {
+    override fun <T : ViewModel?> create(key: String, modelClass: Class<T>, handle: SavedStateHandle): T {
+        return when(modelClass) {
+            MyViewModel::class.java -> MyViewModel(
+                    fetchQuestionUseCaseProvider.get(),
+                    fetchQuestionDetailsUseCaseProvider.get(),
+                    handle) as T
+            MyViewModel2::class.java -> MyViewModel2(
+                    fetchQuestionUseCaseProvider.get(),
+                    fetchQuestionDetailsUseCaseProvider.get(),
+                    handle) as T
+            else -> throw RuntimeException("not a valid modelClass : $modelClass")
+        }
+    }
+}
+
+
+//In order to extend "AbstractSavedStateViewModelFactory" which needs the "savedStateRegistryOwner" instance and "Bundle", Hence ViewModelfactory needs dependencies objects which iis needed to construct our own ViewModel Instance and also "savedStateRegistryOwner" instance.
+
+In this case, to construct "MyViewModel and MyViewModel2" custom ViewModel classes need "FetchQuestionDetailsUseCase and FetchQuestionsUseCase" dependencies instances. AbstractSavedStateViewModelFactory need "SavedStateRegistryOwner" and "Bundle" for constructor parameter, Hence these instances are also dependencies for ViewModelFactory.
+
+In order to pass the android framework supplied "SavedStateHandle" into the rightful custom ViewModel instance(MyViewModel and MyViewModel2), we have to do a explicit comparison using "when" block and instantiate the rightful custom ViewModel instance, Hence we change our old implementation of using MultiBindings into the explicit check.
+
+In ViewModelFactory, now we are dependent on "savedStateRegistryOwner", it has to be provided to Dagger to inject in this factory. In order to provide "savedStateRegistryOwner" to Dagger we make the following changes.
+
+"savedStateRegistryOwner" is the type which is implemented by Activity/Fragment. Hence we need to provide either activity/fragment instance in the place of savedStateRegistryOwner.
+
+Its better to defined the provide method in PresentationCOmponent because, ActivityComponent doesnt have the references to Fragments.
+
+@Module
+class PresentationModule(private val savedStateRegistryOwner: SavedStateRegistryOwner) {
+
+    @Provides
+    fun savedStateRegistryOwner() = savedStateRegistryOwner
+}
+
+// now dependency for building PresentationModule is savedStateRegistryOwner. using @Provides we now share the instance of savedStateRegistryOwner to Dagger
+
+Defining the Module to Component(PresentationCOmponent)
+
+@PresentationScope
+@Subcomponent(modules = [PresentationModule::class])
+interface PresentationComponent {
+    fun inject(fragment: QuestionsListFragment)
+    fun inject(activity: QuestionDetailsActivity)
+    fun inject(questionsListActivity: QuestionsListActivity)
+    fun inject(viewModelActivity: ViewModelActivity)
+}
+
+// now we need to supply the dependency for PresentationModule which is savedStateRegistryOwner at the place of creating PresentationComponent.
+
+// ActivityComponent before changes, we define method for constructing PresentationComponent
+
+@ActivityScope
+@Subcomponent(modules = [ActivityModule::class])
+interface ActivityComponent {
+
+    fun newPresentationComponent(): PresentationComponent
+
+    @Subcomponent.Builder
+    interface Builder {
+        @BindsInstance fun activity(activity: AppCompatActivity): Builder
+        fun build(): ActivityComponent
+    }
+
+}
+
+// ActivityComponent after changes, we define method for constructing PresentationComponent
+
+@ActivityScope
+@Subcomponent(modules = [ActivityModule::class])
+interface ActivityComponent {
+
+    fun newPresentationComponent(presentationModule: PresentationModule): PresentationComponent
+
+    @Subcomponent.Builder
+    interface Builder {
+        @BindsInstance fun activity(activity: AppCompatActivity): Builder
+        fun build(): ActivityComponent
+    }
+
+}
+
+
+//BaseActivity before code changes
+
+open class BaseActivity: AppCompatActivity() {
+
+    private val appComponent get() = (application as MyApplication).appComponent
+
+    val activityComponent by lazy {
+        appComponent.newActivityComponentBuilder()
+                .activity(this)
+                .build()
+    }
+
+    private val presentationComponent by lazy {
+        activityComponent.newPresentationComponent()
+    }
+
+    protected val injector get() = presentationComponent
+}
+
+
+//BaseActivity after code changes
+
+open class BaseActivity: AppCompatActivity() {
+
+    private val appComponent get() = (application as MyApplication).appComponent
+
+    val activityComponent by lazy {
+        appComponent.newActivityComponentBuilder()
+                .activity(this)
+                .build()
+    }
+
+    private val presentationComponent by lazy {
+         activityComponent.newPresentationComponent(PresentationModule(this))
+    }
+
+    protected val injector get() = presentationComponent
+}
+
+//BaseFragment before code changes
+
+open class BaseFragment: Fragment() {
+
+    private val presentationComponent by lazy {
+        (requireActivity() as BaseActivity).activityComponent.newPresentationComponent()
+    }
+
+    protected val injector get() = presentationComponent
+}
+
+//BaseFragment after code changes
+open class BaseFragment: Fragment() {
+
+    private val presentationComponent by lazy {
+        (requireActivity() as BaseActivity).activityComponent.newPresentationComponent(PresentationModule(this))
+    }
+
+    protected val injector get() = presentationComponent
+}
+
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+									WHY "VIEWMODEL" IS SO "COMPLEX"
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+ViewModel is complex because it has a "lifecycle". and its lifecycle is different from the lifecycle of either fragment / activity. Its like combining multiple lifecycles together (fragment/activity and viewModel) thats become challenging.
+
+More Reasons of Complexity.
+
+Instead of Injecting the ViewModel instance(can be constructed / injeccted by dagger, as its dependencies(FetchQuestionDetailsUseCase and FetchQuestionsUseCase) can be injected by Dagger and form ViewModel instance) directly in the client class(ViewModelActivity). 
+
+Instead, we have to Inject ViewModelFactory into the Client class(ViewModelActivity) and then using the Factory, Using ViewModelProvider's static method call, by passing factory and viewmodel class name, we can get the instnace of the viewModel instance.
+
+private lateinit var myViewModel: MyViewModel
+@Inject lateinit var myViewModelFactory: ViewModelFactory
+myViewModel = ViewModelProvider(this, myViewModelFactory).get(MyViewModel::class.java)
+
+Here we could see, severe violation of "Law of Demeter". ViewModelActivity need myViewModel to function, Instead of getting MyViewModel, It gets ViewModelFactory and uses Additional Api (ViewModelProvider) to get the MyViewModel instance.
+
+ViewModelProvider will provide MyViewModel instance for firsttime, but if activity is killed and recreated for configuration change, ViewModelProvider will provide/reuse the same instance which it provided before, it will not create new Instance of MyViewModel everytime. 
+
+Android could have had the below functionality in its ViewModel framework and could have avoided the way of providing ViewModel instance using ViewModelFactory and ViewModelProvider.
+
+Below code doesnt need the concept of ViewModelFactory and ViewModelProvider
+
+@Inject lateinit var myViewModelProvider: Provider<MyViewModel>
+private lateinit var myViewModel: MyViewModel
+
+if (!isViewModelBound(MyViewModel::class.java)) { // if ViewMode is not bind for the class name provided
+	bindViewModel(myViewModelProvider.get())         // get new Instance and bind the viewmodel for this activity
+}
+myViewModel = getBoundViewModel(MyViewModel::class.java) // if viewmodel is already bind, then get it
+
+with above code, the complexity of getting ViewModelFactory and using ViewModelProvider and providing ViewModelStoreOwner to ViewModelProvider, all these complexities can be avoided.
+
+Tips for a class instnace to be injeccted directly: If we follow of defining a class without init{} block and define only dependent construction parameters then directly injecting that particular class instance by dagger will not cause a problem. Use Provider to get instance if the class is Having init block which will maintain/set some state when creating instance of that object.
+
+@Inject lateinit var myViewModel: MyViewModel
+
+if (!isViewModelBound(MyViewModel::class.java)) { // if ViewMode is not bind for the class name provided
+	bindViewModel(myViewModel)         			// get new Instance and bind the viewmodel for this activity
+}
+myViewModel = getBoundViewModel(MyViewModel::class.java) // if viewmodel is already bind, then get it
+
+By following the above code, we follow the "Law of Demeter"
+
+For ViewModel which receives, SavedStateHandle as a constrution parameter, to save the data of the ViewModel on Activity kills for LowMemory cause. How could the ViewModel android framework should have handled, instead of passing SavedStateHandle as constructionParameter and Having a Dedicated factory to construct this ViewModelInstance and pass the SavedStateHandle which is provided by android viewmodel framework to ViewModelFactory and which inturn pass the SaveStateHandle to the construction parameter of the ViewModel.
+
+SavedStateHandle is not an Object, its a complex DataStructure. and DataStructure shouldnt be injected at constructor which is a violation of Fundamental dependency injecction Principle.
+
+ViewModel Class should have an inbuilt method like onInitialized() which should be called by "android viewmodel framwork" when client call bindViewModel on this viewModel class
+
+ override fun onInitialized(savedStateHandle: SavedStateHandle) {
+
+ }
+like (onCleared() - will be called when ViewModel instance is about to destroy), which should be automatically called by android ViewModel framework (sameway like calling onCleared()), when the ViewModel Instance is created/reused everytime. so we can avoid passing savedStateHandle instance as construction parameter to ViewModel constructor, we can do all initialization activity with in that onInitialized() method. with this approach, we can follow the above defined approach(Dagger inject the viewModel instance directly into client and client will check whether its already bound / not and get the bound instance), instead of having a Factory even in the case of ViewModel which contains SavedStateHandle.
+
+ViewModel is so complex is because it severely violates the law of demeter and it also doesnt make proper distinction between data strutures and objects.
+
+Additional reasons for ViewModel framework complexity:
+------------------------------------------------------
+*	viewModel has lifecycle, which is different of lifecycle of fragment/activity.
+*	violation of "Law of Demeter"
+*	injection of runtime data structure(SavedStateHandle) into constructor. 
+
+
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+									SIMPLIFICTION OF VIEWMODEL WITH SAVEDSTATE
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Android suggested way of constructing the ViewModel class which wants SavedStateHandle, by injeccting the SavedStateHandle into the constructor of ViewModel from the Factory(SavedStateHandle is supplied by Android ViewModel Framework to the create() of the factory).
+
+ Since injecting or passing DataStructure(SavedStateHandle) as a constructor parameter is a severe violation of basics of Dependency injection principle. 
+
+ The goal is to remove/avoid injecting DataStructure(SavedStateHandle) into the constructor of the ViewModel. we can avoid passing SavedStateHandle into the constructor, and do code change in the factory(which provides the savedStatehandle while creating the instance of ViewModel) in a different way and continue using the multibindings(which is used to construct multiple ViewModels instances in a single factory)
+
+ Introduce a abstract base class for ViewModel
+----------------------------------------------------
+
+abstract class SavedStateViewModel: ViewModel() {
+    abstract fun init(savedStateHandle: SavedStateHandle)
+}
+----------------------------------------------------
+
+//Change implementation of MyViewModel
+----------------------------------------------------
+class MyViewModel @Inject constructor(
+        private val fetchQuestionsUseCase: FetchQuestionsUseCase,
+        private val fetchQuestionDetailsUseCase: FetchQuestionDetailsUseCase
+): SavedStateViewModel() {
+
+    private lateinit var _questions: MutableLiveData<List<Question>>
+    val questions: LiveData<List<Question>> get() = _questions     // read of questions is delegated to _questions
+
+    override fun init(savedStateHandle: SavedStateHandle) {               // abstract method of BaseClass is 
+    																	  // Implemented
+        _questions = savedStateHandle.getLiveData("questions")
+
+        viewModelScope.launch {
+            val result = fetchQuestionsUseCase.fetchLatestQuestions()
+            if (result is FetchQuestionsUseCase.Result.Success) {
+                _questions.value = result.questions
+            } else {
+                throw RuntimeException("fetch failed")
+            }
+        }
+    }
+}
+----------------------------------------------------
+//Define Hash Key class for "Multibindings"
+"ViewModelKey.kt"
+----------------------------------------------------
+@MapKey
+annotation class ViewModelKey(val value: KClass<out ViewModel>) 
+----------------------------------------------------
+//Define Module class for the services to map "multiple custom ViewModel instances" into ViewModel for Dagger to construct the HashMap of "customViewModel" instnances
+ViewModelModule.kt
+----------------------------------------------------
+@Module
+abstract class ViewModelModule {
+    @Binds
+    @IntoMap
+    @ViewModelKey(MyViewModel::class)
+    abstract fun myViewModel(myViewModel: MyViewModel): ViewModel
+
+    @Binds
+    @IntoMap
+    @ViewModelKey(MyViewModel2::class)
+    abstract fun myViewModel2(myViewModel2: MyViewModel2): ViewModel
+}
+
+//MyViewModel and MyViewModel2 class should be @Inject constructor, so both the instances should be made available to Dagger to create the HashMap successfully
+----------------------------------------------------
+
+// to make Dagger use the ViewModelModule, add ViewModelModule as module dependency for PresentationComponent
+----------------------------------------------------
+PresentationComponent.kt
+
+@PresentationScope
+@Subcomponent(modules = [PresentationModule::class, ViewModelModule::class])
+interface PresentationComponent {
+    fun inject(fragment: QuestionsListFragment)
+    fun inject(activity: QuestionDetailsActivity)
+    fun inject(questionsListActivity: QuestionsListActivity)
+    fun inject(viewModelActivity: ViewModelActivity)
+}
+----------------------------------------------------
+
+//Change the Factory to get the hashMap of instances injected by Dagger, so we can use the Map
+
+class ViewModelFactory @Inject constructor(
+        private val providersMap: Map<Class<out ViewModel>, @JvmSuppressWildcards Provider<ViewModel>>, // Map
+        savedStateRegistryOwner: SavedStateRegistryOwner
+): AbstractSavedStateViewModelFactory(savedStateRegistryOwner, null) {
+    override fun <T : ViewModel?> create(key: String, modelClass: Class<T>, handle: SavedStateHandle): T {
+            val  provider = providersMap[modelClass]
+            val viewModel = provider?.get() ?: throw RuntimeException("not a valid modelClass : $modelClass")
+            if (viewModel is SavedStateViewModel) {
+                viewModel.init(handle)                      // we call the init method, this way we can avoid
+                										// passing SavedStateHandle into the constructor of 
+            }                                           // MyViewModel and MyViewModel2, after we call init()
+            return viewModel as T                       // then we can return the right ViewModel instance to
+    }                                                   // client (ViewModelActivity)
+}
+
+
+// with this implementation we remove the coupling of ViewModel instance to Factory, if a new custom ViewModel class is introduced in Future (MyViewModel3, MyViewModel4), we dont need to add it in the Factory as like we did it before. Now, we add those new ViewModel construction changes in ViewModelModule class and introduce abstract @Binds
+methods for the newly introduced ViewModel3 and ViewModel4 construction.
+
+This modified implementation of following basic principle of not injecting DataStruture(savedstatehandle) objects into the Constructors(MyViewModel and MyViewModel2 constructors) and introduce a abstract method in parent class (SavedStateViewModel) and invoking that method before the ViewModel instance returned to the client gives us the freedom to use "MultiBindings" approach and avoid future modifications(adding new ViewModel implementations like MyViewModel3, MyViewModel4) in ViewModelFactory.

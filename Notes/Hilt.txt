@@ -1,0 +1,655 @@
+Hilt is Google's attempt to standardize the way Android Developers integrate Dagger-2 into their apps.
+
+Hilt is a standalone library which "wraps around" Dagger-2
+
+Hilt provides additional conventions and instructs to follow, With Hilt we still be using Daggers conventions in more opinionated way. Hilt prescribes very specific way to integrate dagger into android apps. 
+
+									Application
+
+------------------------------------------------------------------------------
+|  --------------------------------------------------------------------------  |
+|  |	Construction set        <=== convention over configuration	     ==> | |	Functional Set
+|  |                                                                         | |
+|  |                          Dagger 2                                       | |
+|  |-------------------------------------------------------------------------| |
+|                               Hilt                                           |
+|------------------------------------------------------------------------------|
+
+
+Hilt is a very specific way of intergrating Dagger-2 into your source code. 
+The authors of Hilt, made several assumptions, these assumptions are the fundamental way of Hilt operates.
+Assumptions are nothing but the rules of how hilt operates.
+
+Hilt assumes the developer will not defined the Dagger Components, But developer can use the predefined components and Predefined scopes as described below,
+
+In most general cases, its better not to use ActivityRetainedComponent. 
+
+Hilt Developers, dont want android developers to come-up with their own component structure for DependencyInjection. Hilt prescribe the below structure and Developers can just use the provided structure from Hilt. Developers can put their specific services into the component, Component structure cannot be changed(can be defined new components into the existing structure) defined by Hilt.
+
+****Hierarchy of the components that Hilt generates.***
+
+		------------------------
+			@Singleton
+		------------------------
+			ApplicationComponent
+		------------------------
+                   |__________________________________
+                   |                                  \
+                   v                                   v
+		------------------------				------------------------
+			@ActivityRetainedScoped				@ServiceScoped
+		------------------------				------------------------
+			ActivityRetainedComponent			ServiceComponent
+		------------------------				------------------------
+                   |                                  
+                   v                                   
+		------------------------
+			@ActivityScoped
+		------------------------
+			ActivityComponent
+		------------------------
+                   |__________________________________
+                   |                                  \
+                   v                                   v
+		------------------------				------------------------
+			@FragmentScoped 						@ViewScoped
+		------------------------				------------------------
+			FragmentComponent 						ViewComponent
+		------------------------				------------------------
+                   |                                  
+                   v                                    LEGEND
+		------------------------				------------------------
+			@ViewScoped                             @ScopeAnnotation
+		------------------------				------------------------
+			ViewWithFragmentComponent               ComponentName
+		------------------------				------------------------
+
+Component default bindings
+Each Hilt component comes with a set of default bindings that Hilt can inject as dependencies into your own custom bindings. Note that these bindings correspond to the general activity and fragment types and not to any specific subclass. This is because Hilt uses a single activity component definition to inject all activities. Each activity has a different instance of this component.
+
+Android component					Default bindings
+
+ApplicationComponent				Application
+ActivityRetainedComponent			Application
+ActivityComponent					Application, Activity
+FragmentComponent					Application, Activity, Fragment
+ViewComponent						Application, Activity, View
+ViewWithFragmentComponent			Application, Activity, Fragment, View
+ServiceComponent					Application, Service
+
+The application context binding is also available using @ApplicationContext
+
+These default bindings can be used by the respective components if they need it as a dependency in the process of building new services/methods/provide.
+
+Adding dependencies
+First, add the hilt-android-gradle-plugin plugin to your project's root build.gradle file:
+
+
+buildscript {
+    ...
+    dependencies {
+        ...
+        classpath 'com.google.dagger:hilt-android-gradle-plugin:2.28-alpha'
+    }
+}
+Then, apply the Gradle plugin and add these dependencies in your app/build.gradle file:
+
+
+...
+apply plugin: 'kotlin-kapt'
+apply plugin: 'dagger.hilt.android.plugin'
+
+android {
+    ...
+}
+
+dependencies {
+	// Hilt 
+    implementation "com.google.dagger:hilt-android:2.28-alpha"
+    kapt "com.google.dagger:hilt-android-compiler:2.28-alpha"
+}
+Note: Projects that use both Hilt and data binding require Android Studio 4.0 or higher.
+Hilt uses Java 8 features. To enable Java 8 in your project, add the following to the app/build.gradle file:
+
+
+android {
+  ...
+  compileOptions {
+    sourceCompatibility JavaVersion.VERSION_1_8
+    targetCompatibility JavaVersion.VERSION_1_8
+  }
+}
+
+
+// ApplicationComponent need not be defined / constructed explicitly. we just have to mention the application clas using a annotation
+
+@HiltAndroidApp                                     ------------------ this is the top Application class
+class MyApplication: Application() {
+	//application component is implicitly available
+}
+
+In Client, we dont use explicit @Inject method, to intiate the Injection into the Client, we just decribe the client(QuestionListActivity, QuestionDetailsActivity, QuestionListFragment) using a annotation, Hilt will recongise it and inject into the client Directly. To identify the Hilt about the client which need services to be injected, we need to explicitly defined the Client with "@AndroidEntryPoint" annotation
+
+@AndroidEntryPoint
+class QuestionDetailsActivity : BaseActivity(), QuestionDetailsViewMvc.Listener {
+    @Inject lateinit var fetchQuestionDetailsUseCase: FetchQuestionDetailsUseCase
+    @Inject lateinit var dialogsNavigator: DialogsNavigator
+    @Inject lateinit var screensNavigator: ScreensNavigator
+    @Inject lateinit var viewMvcFactory: ViewMvcFactory
+}
+
+@AndroidEntryPoint
+class QuestionsListFragment : BaseFragment(), QuestionsListViewMvc.Listener {
+    @Inject lateinit var fetchQuestionsUseCase: FetchQuestionsUseCase
+    @Inject lateinit var dialogsNavigator: DialogsNavigator
+    @Inject lateinit var screensNavigator: ScreensNavigator
+    @Inject lateinit var viewMvcFactory: ViewMvcFactory
+
+}
+
+@AndroidEntryPoint
+class ViewModelActivity : BaseActivity() {
+    @Inject lateinit var screensNavigator: ScreensNavigator
+    @Inject lateinit var myViewModelFactory: ViewModelFactory
+
+    //remove "Injector.inject(this)" code
+}
+
+In fragment and Activity, when super.oncreate() is executed, as part of this code the services are injected into the client's @Inject annotated properties.
+
+Even we dont show/ use any injected services in a Activity, If that activity uses a Fragment which has Injected services, we have to enclose the Activity also with @AndroidEntryPoint annotation (Eg: QuestionListActivity)
+
+@AndroidEntryPoint
+class QuestionsListActivity : BaseActivity() {
+
+}
+
+
+----------------------------------------------------
+Discussing @InstallIn annotation for Modules
+----------------------------------------------------
+
+Dagger Hilt inverts the dependencies. Dagger hilt assumes that modules will indicate into which component they need to be installed. Hilt doesnt have explicit defined components, (In Dagger we have to mention the list of modules which we are interested to use inside the component in modules:[]), Hence the modules should mention / expose (using @InstallIn annotation) themselves to which component the module should be exposed to.
+
+Hence in addition to @Module annotation we have to mentioned @InstallIn(Component class name) annotation to mention to which component the module should be part of.
+
+@Module
+@InstallIn(ActivityComponent::class)
+abstract class ActivityModule {
+
+    @ActivityScope
+    @Binds
+    abstract fun screensNavigator(screensNavigatorImpl: ScreensNavigatorImpl): ScreensNavigator
+
+    companion object {
+        @Provides
+        fun layoutInflater(activity: AppCompatActivity) = LayoutInflater.from(activity)
+
+        @Provides
+        fun fragmentManager(activity: AppCompatActivity) = activity.supportFragmentManager
+    }
+
+}
+
+"ActivityComponent" is the predefined set of implicit component in Hilt, its not the one which we defined. 
+
+@Module
+@InstallIn(ApplicationComponent::class)                    /// ApplicationComponent is inbuilt component of Hilt
+class AppModule(val application: Application) {
+
+    @Provides
+    @AppScope
+    @Retrofit1
+    fun retrofit1(urlProvider: UrlProvider): Retrofit {
+        return Retrofit.Builder()
+                .baseUrl(urlProvider.getBaseUrl1())
+                .addConverterFactory(GsonConverterFactory.create())
+                .build()
+    }
+
+    @Provides
+    @AppScope
+    @Retrofit2
+    fun retrofit2(urlProvider: UrlProvider): Retrofit {
+        return Retrofit.Builder()
+                .baseUrl(urlProvider.getBaseUrl2())
+                .addConverterFactory(GsonConverterFactory.create())
+                .build()
+    }
+
+    @AppScope
+    @Provides
+    fun urlProvider() = UrlProvider()
+
+    @Provides
+    fun application() = application
+
+    @Provides
+    @AppScope
+    fun stackoverflowApi(@Retrofit1 retrofit: Retrofit) = retrofit.create(StackoverflowApi::class.java)
+
+}
+
+// we delete the presentation component and presentation module, as it cant be referred to any of the inbuilt hilt component.
+
+@Module
+@InstallIn(ServiceComponent::class)
+class ServiceModule(
+        val service: Service
+) {
+
+    @Provides
+    fun context(): Context = service
+
+}
+
+Dagger know to instantiate modules which dont have any constructor arguments / boot-strap dependencies. If a module have constructor arguments / boot-strap dependency then dagger-hilt dont know how to instantiate them. In our AppModule the constructor argument is "val application: Application" which is not needed to be passed in, as it will be automatically provided by Dagger-Hilt, Hence we cant remove it
+
+@Module
+@InstallIn(ApplicationComponent::class)                    /// ApplicationComponent is inbuilt component of Hilt
+class AppModule() {
+
+    @Provides
+    @AppScope
+    @Retrofit1
+    fun retrofit1(urlProvider: UrlProvider): Retrofit {
+        return Retrofit.Builder()
+                .baseUrl(urlProvider.getBaseUrl1())
+                .addConverterFactory(GsonConverterFactory.create())
+                .build()
+    }
+
+    @Provides
+    @AppScope
+    @Retrofit2
+    fun retrofit2(urlProvider: UrlProvider): Retrofit {
+        return Retrofit.Builder()
+                .baseUrl(urlProvider.getBaseUrl2())
+                .addConverterFactory(GsonConverterFactory.create())
+                .build()
+    }
+
+    @AppScope
+    @Provides
+    fun urlProvider() = UrlProvider()
+
+    @Provides
+    fun application() = application
+
+    @Provides
+    @AppScope
+    fun stackoverflowApi(@Retrofit1 retrofit: Retrofit) = retrofit.create(StackoverflowApi::class.java)
+
+}
+
+// in ServiceModule, dagger-hilt will provide Service instance as dependency, Hence its not needed to be passed in as constructor argument
+
+@Module
+@InstallIn(ServiceComponent::class)
+class ServiceModule() {
+
+    @Provides
+    fun context(): Context = service
+
+}
+
+When using dagger-hilt, we dont have access to the components. therefore instead of components pointing to modules which they use.  module should instruct hilt into which components they need to be installed using @InstallIn annotation. All module must have empty constructors, shouldnt have boot-strap dependency.
+
+----------------------------------------------------
+				Hilt Scopes
+----------------------------------------------------
+
+Hilt have its own inbuilt scope, we need to use the predefined Scopes exposed by Hilt.
+In AppModule, we should avoid using @AppScope, use the predefined Scoped exposed by hilt for ApplicationComponent
+
+For ApplicationComponent, hilt advice to use @Singleton scope
+
+@Module
+@InstallIn(ApplicationComponent::class)
+class AppModule() {
+
+    @Provides
+    @Singleton
+    @Retrofit1
+    fun retrofit1(urlProvider: UrlProvider): Retrofit {
+        return Retrofit.Builder()
+                .baseUrl(urlProvider.getBaseUrl1())
+                .addConverterFactory(GsonConverterFactory.create())
+                .build()
+    }
+
+    @Provides
+    @Singleton
+    @Retrofit2
+    fun retrofit2(urlProvider: UrlProvider): Retrofit {
+        return Retrofit.Builder()
+                .baseUrl(urlProvider.getBaseUrl2())
+                .addConverterFactory(GsonConverterFactory.create())
+                .build()
+    }
+
+    @Singleton
+    @Provides
+    fun urlProvider() = UrlProvider()
+
+    @Provides
+    @Singleton
+    fun stackoverflowApi(@Retrofit1 retrofit: Retrofit) = retrofit.create(StackoverflowApi::class.java)
+
+}
+
+Instead of changing all the @AppScope to @Singleton we can define @AliasOf to AppScope which will avoid editing in all places.
+
+@Scope
+@AliasOf(Singleton::class)
+annotation class AppScope {
+}
+
+@Module
+@InstallIn(ApplicationComponent::class)
+class AppModule() {
+
+    @Provides
+    @AppScope
+    @Retrofit1
+    fun retrofit1(urlProvider: UrlProvider): Retrofit {
+        return Retrofit.Builder()
+                .baseUrl(urlProvider.getBaseUrl1())
+                .addConverterFactory(GsonConverterFactory.create())
+                .build()
+    }
+
+    @Provides
+    @AppScope
+    @Retrofit2
+    fun retrofit2(urlProvider: UrlProvider): Retrofit {
+        return Retrofit.Builder()
+                .baseUrl(urlProvider.getBaseUrl2())
+                .addConverterFactory(GsonConverterFactory.create())
+                .build()
+    }
+
+    @AppScope
+    @Provides
+    fun urlProvider() = UrlProvider()
+
+    @Provides
+    @AppScope
+    fun stackoverflowApi(@Retrofit1 retrofit: Retrofit) = retrofit.create(StackoverflowApi::class.java)
+
+}
+
+
+// rename all the Scoped services of ActivityModule with the predefined scope(@ActivityScoped) exposed by hilt which should be used compulsarily
+
+//before changes
+
+@Module
+@InstallIn(ActivityComponent::class)
+abstract class ActivityModule {
+
+    @ActivityScope
+    @Binds
+    abstract fun screensNavigator(screensNavigatorImpl: ScreensNavigatorImpl): ScreensNavigator
+
+    companion object {
+        @Provides
+        fun layoutInflater(activity: AppCompatActivity) = LayoutInflater.from(activity)
+
+        @Provides
+        fun fragmentManager(activity: AppCompatActivity) = activity.supportFragmentManager
+    }
+
+}
+
+//after changes
+
+@Module
+@InstallIn(ActivityComponent::class)
+abstract class ActivityModule {
+
+    @ActivityScoped
+    @Binds
+    abstract fun screensNavigator(screensNavigatorImpl: ScreensNavigatorImpl): ScreensNavigator
+
+    companion object {
+        @Provides
+        fun layoutInflater(activity: AppCompatActivity) = LayoutInflater.from(activity)
+
+        @Provides
+        fun fragmentManager(activity: AppCompatActivity) = activity.supportFragmentManager
+    }
+
+}
+
+@ActivityScoped
+class ImageLoader @Inject constructor(private val activity: AppCompatActivity) {
+
+    private val requestOptions = RequestOptions().centerCrop()
+
+    fun loadImage(imageUrl: String, target: ImageView) {
+        Glide.with(activity).load(imageUrl).apply(requestOptions).into(target)
+    }
+}
+
+--------------------------------------------------------------------------------------------
+Activity module which exposes services of fragmentManager and layoutinflater, which inturn dependenct on 
+activity instance, Hilt is not able to @INject/provide it.
+
+@Module
+@InstallIn(ActivityComponent::class)
+abstract class ActivityModule {
+
+    @ActivityScoped
+    @Binds
+    abstract fun screensNavigator(screensNavigatorImpl: ScreensNavigatorImpl): ScreensNavigator
+
+    companion object {
+        @Provides
+        fun layoutInflater(activity: AppCompatActivity) = LayoutInflater.from(activity)
+
+        @Provides
+        fun fragmentManager(activity: AppCompatActivity) = activity.supportFragmentManager
+    }
+
+}
+
+// dagger provides "activity" instance, it wont provide AppCompatActivity instance. Hence we make some changes which will avoid the code break, layoutInflater can be instantiated with "activity" instance, but fragmentManager needs instnace of "appcompatactivity". Hence we cast it as in our application all activity extends the AppcompatActivity.
+
+@Module
+@InstallIn(ActivityComponent::class)
+abstract class ActivityModule {
+
+    @ActivityScoped
+    @Binds
+    abstract fun screensNavigator(screensNavigatorImpl: ScreensNavigatorImpl): ScreensNavigator
+
+    companion object {
+        @Provides
+        fun layoutInflater(activity: Activity) = LayoutInflater.from(activity)
+
+        @Provides
+        fun appCompatActivity(activity: Activity) = activity as AppCompatActivity
+        
+        @Provides
+        fun fragmentManager(activity: AppCompatActivity) = activity.supportFragmentManager
+    }
+
+}
+
+
+--------------------------------------------------------------------------------------------------------------------
+							Hilt and ViewModel
+--------------------------------------------------------------------------------------------------------------------
+
+ViewModelFactory is needed in order to provide SavedStateHandle to our customViewModel class, to save the viewModel data on app process kill. In order to create instance of ViewModelFactory we need to pass SavedStateRegistryOwner to the Parent Factory class (AbstractSavedStateViewModelFactory).
+
+
+class ViewModelFactory @Inject constructor(
+        private val fetchQuestionDetailsUseCaseProvider: Provider<FetchQuestionDetailsUseCase>,
+        private val fetchQuestionsUseCaseProvider: Provider<FetchQuestionsUseCase>,
+        savedStateRegistryOwner: SavedStateRegistryOwner
+): AbstractSavedStateViewModelFactory(savedStateRegistryOwner, null) {
+
+    override fun <T : ViewModel?> create(key: String, modelClass: Class<T>, handle: SavedStateHandle): T {
+        return when(modelClass) {
+            MyViewModel::class.java ->
+                MyViewModel(
+                        fetchQuestionsUseCaseProvider.get(),
+                        fetchQuestionDetailsUseCaseProvider.get(),
+                        handle
+                ) as T
+            MyViewModel2::class.java ->
+                MyViewModel2(
+                        fetchQuestionsUseCaseProvider.get(),
+                        fetchQuestionDetailsUseCaseProvider.get()
+                ) as T
+            else -> throw RuntimeException("unsupported viewmodel type: $modelClass")
+        }
+    }
+
+}
+
+Dagger-Hilt remove the restriction of Creating factory for ViewModels. It pass the SavedStateHandle instance directly into the CustomViewModel class constructors directly (with some annotations like @ViewModelInject, @Assisted).
+
+To get these annotations support we need to ass some extra dependencies into the Gradle.
+
+    implementation "androidx.hilt:hilt-lifecycle-viewmodel:1.0.0-alpha02"
+    kapt "androidx.hilt:hilt-compiler:1.0.0-alpha02"
+
+
+//Remove the ViewModelFactory class, introduce these annotations to customViewModel (MyViewModel, MyViewModel2)
+
+class MyViewModel @ViewModelInject constructor(
+        private val fetchQuestionsUseCase: FetchQuestionsUseCase,
+        private val fetchQuestionDetailsUseCase: FetchQuestionDetailsUseCase,
+        @Assisted private val savedStateHandle: SavedStateHandle
+): ViewModel() {
+
+    private val _questions: MutableLiveData<List<Question>> = savedStateHandle.getLiveData("questions")
+    val questions: LiveData<List<Question>> = _questions
+
+    init {
+        viewModelScope.launch {
+            delay(5000)
+            val result = fetchQuestionsUseCase.fetchLatestQuestions()
+            if (result is FetchQuestionsUseCase.Result.Success) {
+                _questions.value = result.questions
+            } else {
+                throw RuntimeException("fetch failed")
+            }
+        }
+    }
+
+}
+
+class MyViewModel2 @ViewModelInject constructor(
+        private val fetchQuestionsUseCase: FetchQuestionsUseCase,
+        private val fetchQuestionDetailsUseCase: FetchQuestionDetailsUseCase
+): ViewModel() {
+
+    private val _questions = MutableLiveData<List<Question>>()
+    val questions: LiveData<List<Question>> = _questions
+
+}
+
+// changes Before removing ViewModelFactory in ViewModelActivity
+
+@AndroidEntryPoint
+class ViewModelActivity : BaseActivity() {
+
+    @Inject lateinit var screensNavigator: ScreensNavigator
+    @Inject lateinit var myViewModelFactory: ViewModelFactory // remove Factory
+
+    private lateinit var myViewModel: MyViewModel
+    private lateinit var myViewModel2: MyViewModel2
+
+    private lateinit var toolbar: MyToolbar
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        setContentView(R.layout.layout_view_model)
+
+        toolbar = findViewById(R.id.toolbar)
+        toolbar.setNavigateUpListener {
+            screensNavigator.navigateBack()
+        }
+
+        myViewModel = ViewModelProvider(this, myViewModelFactory).get(MyViewModel::class.java) // remode Factory
+        myViewModel2 = ViewModelProvider(this, myViewModelFactory).get(MyViewModel2::class.java)
+
+        myViewModel.questions.observe(this, Observer {
+            questions -> Toast.makeText(this, "fetched ${questions.size} questions", Toast.LENGTH_SHORT).show()
+        })
+    }
+
+    companion object {
+        fun start(context: Context) {
+            val intent = Intent(context, ViewModelActivity::class.java)
+            context.startActivity(intent)
+        }
+    }
+}
+
+// changes After removing ViewModelFactory in ViewModelActivity, removed the ViewModelFactory, as its not required in Hilt
+
+
+@AndroidEntryPoint
+class ViewModelActivity : BaseActivity() {
+
+    @Inject lateinit var screensNavigator: ScreensNavigator
+
+    private lateinit var myViewModel: MyViewModel
+    private lateinit var myViewModel2: MyViewModel2
+
+    private lateinit var toolbar: MyToolbar
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        setContentView(R.layout.layout_view_model)
+
+        toolbar = findViewById(R.id.toolbar)
+        toolbar.setNavigateUpListener {
+            screensNavigator.navigateBack()
+        }
+
+        myViewModel = ViewModelProvider(this).get(MyViewModel::class.java)
+        myViewModel2 = ViewModelProvider(this).get(MyViewModel2::class.java)
+
+        myViewModel.questions.observe(this, Observer {
+            questions -> Toast.makeText(this, "fetched ${questions.size} questions", Toast.LENGTH_SHORT).show()
+        })
+    }
+
+    companion object {
+        fun start(context: Context) {
+            val intent = Intent(context, ViewModelActivity::class.java)
+            context.startActivity(intent)
+        }
+    }
+}
+
+//Thats all with Dagger-Hilt
+
+************************************ Hilt Summary *****************************************
+	
+		*	Hilt is a kind of "Opinionated" Dagger 2 (provides additional conventions of Dagger-2 and restricts to use Dagger-2, imposes very reasonable restrictions and exposes very convenient conventions, makes life easier in using of ViewModels)
+		
+		Hilt Fundamentals:
+			*	Use predefined set of implicit Components.
+			*	Each predefined component is associated with predefined scope.
+			*	Automatically provides specific bootstraping services (Eg: Application instance for Modules InstallIn to ApplicationComponent, Activity and Application instance for Modules InstallIn to ActivityComponent)
+			*	Modules specify in which components they should be installed. (In standard Dagger, Components point to modules(modules used in a component are specified in Components)). In Hilt we reverse the direction of dependencies. this scheme allows the components remain implicit/predefined, developer no need to creat components, rather opt for which component the module has to mapped with.
+
+			* hilt also provide ways to overide its convention of using predefined components, it allows developers to introduce their own components
+
+		*	Hilt can become the next standard for DI in android world.
+
+
+	Concerns with Hilt.
+
+		*	Bugs of current alpha release of Hilt
+		*	Impact on build times (because of additional annotation processor)
+		*	Impact on incremental builds stability.(clean and rebuild everytime is not good for large projects)

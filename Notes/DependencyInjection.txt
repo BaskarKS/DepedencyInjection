@@ -1,0 +1,396 @@
+---------------------------------------------
+Client-Service realtionship is Contextual:
+---------------------------------------------
+
+FirstClass --- makes use of ---> Second Class ------ makes use of ------> Third Class
+           <--------------------  (Service)
+
+Second class will act as Service in perspective of First Class           
+Second class will act as Client in perspective of Third Class  
+
+Class can act as a (Service / Client) depending upon the context
+
+
+---------------------------------------------
+How client obtain references to Services?
+---------------------------------------------
+Ways to get references of the services by the client
+1. Instantiation.  (Client's active resolution of dependencies)
+2. Static Method call (Factory Methods) (Client's active resolution of dependencies)
+3. Static Global Variable and get the reference of service from it. (Client's active resolution of dependencies)
+4. Receive references from "outside" (Client's passive resolution of dependencies) (references to dependencies are injected from outside - dependency injection) 
+
+Dependency Injection == Providing services to Clients from "outside"
+
+------------------------------------------------------------------------------------------
+Fundamental Techniques of Dependency Injection or provide "Services" to Clients from outside
+------------------------------------------------------------------------------------------
+Three ways to "inject" services from "outside":
+1. Constructor injection
+2. Method Injection
+3. Field Injection (Property Injection in Kotlin)
+
+
+class Client(private val service1: Service1) { // Service1 is injected through Constructor
+	
+	private var service2: Service2? = null
+
+	lateinit var service3: Service3 //sure that someone or some entity will initialize this variable before its used
+                                              // if this is violated we get Runtime exception // Field Injection 
+	fun setService2(service2: Service2) {
+		this.service2 = service2                 // Service1 is injected through Method
+	}
+}
+
+------------------------------------------------------------------------------------------
+Comparison Between Fundamental Dependency Injection Techniques
+------------------------------------------------------------------------------------------
+Constructor Injection:
+Advantages / Benefits:
+	1. simple
+	2. Constructor signature reflects(explains) internal dependencies (Better Readability)
+	3. Injected services/fields can be finalized
+	4. Easy to mock services(the services which we inject into the constuctor) in unit tests. 
+	(wont be able to instantiate services before we satisfy all its dependencies)
+Drawbacks:
+	None
+
+Method Injection:
+Advantages / Benefits:
+	1. Method signature reflects(explains) its dependencies
+	2. Can happen after construction. (already client is constructed, will be able to inject a service to client)
+Drawbacks:
+	1. No as explicit(less readability than constructor injection) as Constructor injection. (usually any 
+	class(client in our case) will have few constructors than the API's (methods). Its much easier to read the
+	constructor and come to a understanding about the dependencies of the client by reading the constructor
+	rather than reading its API's / methods)
+	2. can lead to implicit ordering requirements(temporal coupling - client need to ensure to call init() method
+	or method injecction method to set all its services properly before start working on the business logic methods
+	which uses the service) In big systems it may lead to messy code flow, miss some edge cases, cause exceptions 
+	because of invalid reference of the service to be injected into client through methods.
+
+
+Field/Property Injection:
+Advantages / Benefits:	
+	1. Can happen after construction. (already client is constructed, will be able to inject a service to client)
+Drawbacks:
+	1. No as explicit(less readability than constructor injection) as Constructor injection. (usually any 
+	class(client in our case) will have few constructors than the API's (methods). Its much easier to read the
+	constructor and come to a understanding about the dependencies of the client by reading the constructor
+	rather than reading its API's / methods)
+	2. can lead to implicit ordering requirements(temporal coupling - client need to ensure to call init() method
+	or method injecction method to set all its services properly before start working on the business logic methods
+	which uses the service) In big systems it may lead to messy code flow, miss some edge cases, cause exceptions 
+	because of invalid reference of the service to be injected into client through methods.
+
+Note/Advice : Always Favour Constructor Injection if theres a possibility of using Constructor injection, if its not
+			  possible then favor the method / field injection
+
+------------------------------------------
+Scenarios in which Constructor injection is Not possible to use:
+------------------------------------------
+1. when service is not available when the client is cosnstructed (BLuetoothManager(client) will be
+instantiated much early before any BlueToothDevice(service) is available, bluetoothDevice is available much later
+after the BluetoothManager is constructed). In this cases we have to either use Field/Method injection.
+2. If we dont instantiate the client (eg: Activity / Service / Application class - these are instantiated by
+										Android Framework)
+Recently after Android P we are given privileges to instantiate the activity and fragment(using fragment helper)
+but we cant use it until android P becomes the minimum sdk standard. 
+
+
+------------------------------------------------------------------------------------
+Is Dependency Injection is just about using the Fundamental Techniques - LargeScaleStructure
+------------------------------------------------------------------------------------
+
+we cant unit test the below class because we cant instantiate the class and theres no possiblility to provide
+a "test Double" to mSomeService and further unitTest the "SomeClient" class.
+public class SomeClient {
+	private final SomeService mSomeService;
+
+	public SomeClient() {
+		mSomeService = new SomeService();
+	}
+}
+
+we can unit test the below class because we cant instantiate the class and provide
+a "test Double" to mSomeService and further unitTest the "SomeClient" class.
+
+public class SomeClient {
+	private final SomeService mSomeService;
+
+	public SomeClient(SomeService someService) {
+		this.mSomeService = someService;
+	}
+}
+
+"Dependency Injection is just passing services into the clients from outside".
+
+Dependency Injection Puzzler #1:
+-----------------------------------
+
+public class DataAggregator {
+	private final List<Data> mData;
+
+	public DataAggregator() {
+		mData = new LinkedList<>(); <-- Does this violate dependency Injection principles?
+	}
+
+	public void addData(Data data) {
+		mData.add(data);
+	}
+
+	public List<Data> getAllData() {
+		return mData;
+	}
+}
+
+// if we inject the mData considering it violates the Dependency Injection principle, then it
+violates the basic OOP principle of Excapsulation which is binding the Internal data with its operation
+
+Dependency Injection Puzzler #2:
+-----------------------------------
+
+	public class SomeClient {
+		private final SomeService1 mSomeService1;
+		private final SomeService2 mSomeService2;
+		public SomeClient(ServiceLocator serviceLocator) { // constructor injection, looks geniuene
+			mSomeService1 = serviceLocator.getService(someService1.class);
+			mSomeService2 = serviceLocator.getService(someService2.class);
+		}
+	}
+
+This design is doesnt looks good intutively.
+
+Dependency Injection Puzzler #3:
+-----------------------------------
+
+if dependency is so simple concept of injecting services into the clients through constructors/methods/fields, then why the tools which provide dependency injection is sooo complex.
+
+Why dependency injection framework exist and why are they so complex?
+	
+Dependency Injection Puzzler #4:
+-----------------------------------
+
+	Does the injecting class which injects the services into the clients violates the dependency injection
+	principle?
+	
+	If all clients get their services from outside, who instantiates all these services? (this is the most 
+	important question in context of dependency injection)
+
+
+Conclusion: In order to answer these puzzlers , need to go out of the abstraction level of a single class and
+look at the application as a whole entity to justify, and then we will be dealing with some kind of large scale structure.
+
+--------------------------------------------------------------------------------------------------------------------
+--------------------------------------------------------------------------------------------------------------------
+							DEPENDENCY INJECTION ARCHITECTURURAL PATTERN
+--------------------------------------------------------------------------------------------------------------------
+--------------------------------------------------------------------------------------------------------------------
+
+	go out of the abstraction level of a single class and look at the application as a whole entity which forms as a larger scale structure, This larger scale structure is Architectural pattern.
+
+Design Pattern:
+	Design pattern is a general, resusable solution to a commonly occurring problem with in a given context in
+	software design.
+		Whenever we encounter a standard problem in our design, there might be some design patterns(existing solution to that problem) that we can use to solve the problem quickly/effeciently. 
+
+		Eg: Observer, Singleton, Strategy, etc..
+
+Architectural Pattern Vs Design Pattern:
+-------------------------------------------
+
+1. Architectural patterns(mostly covers entire app) are broader in scope than design patterns(max 3-4 entities).
+2. Not as Detailed as design patterns(it has step by step procedure details). Its much possible to customize architectural pattern to our specific needs.
+
+Popular Architectural Pattern:
+-----------------------------
+	For organizing the logic in presentation layer of GUI applications: MVx(ModelView-Controller, ModelView-Presenter, ModelView-ViewModel)
+
+	To have system wide notification : publish-subscribe architecture (eventbus / enterprice service bus)
+	PCI Express bus is an implementation of Publish-Subscribe architectural pattern
+
+	If we have State Management requirement : event-driven architecture (google for "event sourceing" which is a popular implementation of event-driven architecture on the backend of software)
+
+
+Very Important to keep in mind: "  "Architecture Pattern" is not equal to "Architecture"  " 
+ (can use more than one architectural pattern in our code base - use MVC pattern in presentation layer and use publish-subscribe to interconnect different modules and if we have database with complex requirements so we 
+ can use even-driven architecture to organise )
+
+ """Its possible to combine architectural patterns in one single application in a harmonic way."""
+
+ DIAP(Dependency Injection Architectural Pattern):
+ Its main characteristic of DIAP is segregation of application's logic into two sets of classes
+ 	1. Functional Set (contains classes that encapsulate core appliations functionality )
+ 	2. Construction Set (contains classes that resolve dependencies and instantiate objects from functional set)
+
+ 	Functional and Construction sets must be disjoint. 
+ 	Segregation of classes into construction and functional	sets is manifestation of "Seperation of Concerns"
+
+ 							Application
+
+		Construction Set                      Functional Set
+		    (classes) 	   <<Integration>>      (classes)
+
+------------------------------------------------------------------------------------------------------------------
+------------------------------------------------------------------------------------------------------------------
+	DEPENDENCY INJECTION ARCHITECTURE PATTERN  	vs 	FUNDAMENTAL TECHNIQUES OF DEPENDENCY INJECTION
+------------------------------------------------------------------------------------------------------------------
+------------------------------------------------------------------------------------------------------------------
+
+Relationship between "Fundamental technique of dependency injection" and "Dependency injection architecture pattern"
+
+1. Different levels of abstraction. 
+whenever we discuss about the "constructor injection" and "field injection" we are discussing about the level of abstraction of single class.
+DIAP is something operates at the level of entire application
+
+2. Fundamental techniques are the low level implementation details of DIAP. 
+In OOP we will have objects and we will want these objects to work together to acheive some kind of large level
+functionality of the application. to do that we have to pass them around and make them available for one another 
+and the best way to acheive that is though the "fundamental techique of dependency injection".
+
+Even if we have implemented DIAP, if we have closer look and we can observe internally we can see the 
+fundamental techiques of dependency injection is used.
+
+But its not enough to just employ "fundamental techniques of dependency injection" to build DIAP.
+
+** "DIAP has a rich theoretical foundation". 
+
+Both the "fundamental techniques of dependency injection" and "DIAP" are referred to as "Dependency Injection"
+
+"Dependency Injection frameworks are tools which implicitly live in the context of DIAP". 
+
+Readability and Maintainablity will be the major challenges when all the components and responsibilities
+are defined inside a single activity, making it to become as a GodActivity. to intorduce a small chnage
+we needto read the entire acitivity to make the proper changes to avoid appearing sideeffects of the 
+changes and making all changes will make the responsibilities will be coupled with in which will trigger
+to appear sideeffects of the changes done.
+
+
+																	
+												ScreensNavigator
+												(encapsulate screen transition management logic)
+
+												     ^
+			(View)      						     | (Controlller)                     (Model)
+		QuestionsListViewMvc <---------------QuestionListActivity--------------> FetchQuestionUseCase
+		(encapsulate UI logic)               		 |                          (encapsulte networking logic)
+													 |
+													 v
+												DialogsNavigator (encapsulate dialog
+																	Management logic)
+
+MVC is a good start but it isnt sufficient to make android apps "clean" on its own
+
+
+----------------
+Law of Demeter: (very important rule of thumb for software design)
+----------------
+Pattern of passing unneeded objects around, just for the sake of getting other objects, this is 
+violation of law of demeter (In our case, retrofit is not needed by the usecases but we pass them
+around to get the stackoverflow instance to be used in usecases)
+
+Law of Demeter : "only talk to your immediate friends"
+
+If a class requires specific functionlity,  dont make the class to be dependent on some other unrelated 
+classes, make sure the class uses only the dependency it needs and it doesnt have other dependency
+
+This law helps in following advantages
+1. It allows to trace the dependency graph of the application and helps to understand the usage of classes
+2. refactor the application
+
+Law of Demeter Charecteristics:
+-------------------------------
+1. Principle of Least Knowledge (every component in design should know as little as possible about
+								its surroundings, it should communicate and depend only on the classes it
+								really needs)
+2. Minimized class dependencies (each class in the application will just depend on other classes which is
+								used directly by the class)
+
+3. Make code more readable and Maintainable
+
+
+
+// To make the start-up time of the application fast/quick. 
+Make lazy initialization of services in the AppCompositionRoot (This is the root object of which is 
+composed of all the services which is to be shared through application level. This instance will reside 
+in the Application class of the application)
+
+Make lazy initialization of services in the compositionRoot (This is the root object of which is 
+composed of all the services which is to be shared across activity level. This instance will reside 
+in the BaseActivity class), hence every activity which extends this base activity will have an instance
+and get all necessary services thought this composition root, this activity composition root will also
+have an instance of AppCompositionRoot so that it can also get the services which are global to 
+application.
+
+The dependencies which are passed from outside into the composition root are called as 
+"Boot Strap Dependencies" which means that cant be constructed inside the composition root
+therefore it has to passed from outside, have to keep this dependency count number minimum.
+
+Rule of Thumb for a Factory(In our case its ViewMvcFactory):
+	If a factory takes in a specific service (any instance of dependency) then this service should
+	be safe to be re-used among all the objects which the factory instantiates, otherwise the factory 
+	should take in another factory and just delegate it to the other factory whenevver it needs a 
+	specific service.
+
+
+
+
+Application-Scope						AppCompositionRoot
+												^
+												|
+-----------------------------------------------------------------------------------								
+Activity-Scope							ActivityCompositionRoot
+-----------------------------------------------------------------------------------
+												^
+												|
+Presentation-Scope						PresentationCompositionRoot
+	or 											^
+Controller-Scope								|
+										Activities and Fragments
+
+
+Implementation of Dependency Injection Architectural Pattern without without third party frameworks
+has a special name which is called as "Pure Dependency Injection / 
+									   Manual Dependency Injection / 
+									   Vanilla Dependency injection / 
+									   Poor Man Dependency Injection"
+
+------------------------------------------
+Main Benefit of Dependency Injection:
+------------------------------------------
+Its the property of compositionRoot that it knows how to instantiate all the objects and wires it together inside object graph and each object is instantiated at a single place that makes compositionRoot as one of the most 
+important concept in Object Oriented Design.
+
+Main Benefit:: "Non-repetitive defenition and Exposure of the entire object graph by Composition root(clients of both internally and externally type) is the main benefit of Dependency Injection"
+
+"With Dependency Injection, you can keep your classes small and focused(acheive Single responsibility), but still easily compose them into arbitary long chains to acheive complex functionality"
+
+Main Benefits of Dependency Injection is that it enables 
+1. Single Responsibility Principle and Reusability
+
+Only try to use Constructor injection inside the Dependency Injection Architecture pattern and Composition
+Root, do no use method / field injection to inject activity/application context.
+
+Dependency injecton architectural pattern deals with objects, not data structures. should not expose
+data structures on object graph(objects constructed in compositionRoot) either internally or externally.
+should expose only objects(object can contain data to operate but its purely composed of behaviours). only such 
+objects should be exposed from compositionRoot(DependencyInjection), but not dataStructures. DataStructures 
+should be constructed and used then and there or if a object is supposed to expose data outside it should be returned from the methods of the object, it should not be used to be constructed and exposed inside CompositionRoot
+
+Dependency Injecction Architecture Pattern deals with Objects not DataStructures
+
+--------------------------------------------
+Dependency Injection Framework
+--------------------------------------------
+
+DIF(Dependency Injection Framework) scope of applicability should be only (ConstructionSet and Integration) of 
+Dependency Injection Architectural pattern, It should not affect the implementation of FuctionalSet classes in the
+application.
+
+* DIF(Dependency Injection Framework) is an external Library
+* DIF(Dependency Injection Framework) provides a specific template for ConstructionSet Implementation
+* DIF(Dependency Injection Framework) provides set of Pre-Defined conventions (Helps all developers to be on same sync on development because the conventions are set of standard rules to use the template of DIF)
+
+Difference in the aspects of template and predefined conventions is the one which differs across different
+Dependency Injection Frameworks.
+

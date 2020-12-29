@@ -1,0 +1,1182 @@
+----------------------------------------------------------------------------------------------------------
+----------------------------------------------------------------------------------------------------------
+                                        ANDROID SERVICES AND DIALOGS
+----------------------------------------------------------------------------------------------------------
+----------------------------------------------------------------------------------------------------------
+
+Additional Conventions of Dagger, set up dependency injection for services and Dialogs
+
+Setup package of "services" inside "dependencyinjection" package
+
+create "ServiceComponent" and "ServiceModule"
+
+@Module
+class ServiceModule(
+        val service: Service
+) {
+    @Provides
+    fun context(): Context = service
+}
+
+This service instance can be used/injected as Context in required area in all services
+
+@Subcomponent(modules = [ServiceModule::class])
+interface ServiceComponent {
+    fun newPresentationComponent(): PresentationComponent
+}
+
+ServiceComponent will be the subcomponent and it cant be a subcomponent for ActivityComponent, as Services
+and Activity have different life cycle, hence it will be subcomponent of AppComponent, we introduce method in AppComponent to create instance of the ServiceComponent
+
+@AppScope
+@Component(modules = [AppModule::class])
+interface AppComponent {
+
+    fun newActivityComponent(activityModule: ActivityModule): ActivityComponent
+    fun newServiceComponent(serviceModule: ServiceModule): ServiceComponent
+}
+
+// we create BaseClass for all Services, from there we create instance of the serviceComponent and that can be used by Service clients to inject dependencies required for that client services.
+
+we create a common package which has this BaseClass for Service, called "service" under "common" package
+
+
+abstract class BaseService: Service() {
+    private val appComponent get() = (application as MyApplication).appComponent
+
+    val serviceComponent by lazy {
+        appComponent.newServiceComponent(ServiceModule(this))
+    }
+}
+
+// this is the dependency injection infrastructure for services
+
+----------------------------------------------------------------------------------------------------------
+                                        DI FOR ANDROID DIALOGS
+----------------------------------------------------------------------------------------------------------
+
+Its not good approach to define dialogs inside activities and fragments, especially if the dialogs are complex.
+Its always recommend to have Dialogs in stand-alone classes.
+
+Dialogs are like activities and Fragments even if you implement using Dialog class / custom Views, are basically Conrollers(in MVC). Better have a proper DI setup for them.
+
+Since dialogs are part of Presentation layer like Activites and Fragments , we can reuse PresentationComponent for
+DI into Dialogs. Basically Activities, Fragments and Dialogs share the same object graph in DependencyInjection(DI)
+
+setup a new file in common.dialogs.BaseDialog.kt
+
+Better to use DialogFragment class in android, because they have lifecycle(better can be utilized for complex flows). DialogFragment is retained in configurationchanged and processed. In complex flows, the onStart() and OnStop() callbacks will be useful to process some logic.
+
+
+open class BaseDialog: DialogFragment() {
+    private val presentationComponent = (requireActivity() as                   
+                                                BaseActivity).activityComponent.newPresentationComponent()
+
+    protected val injector get() = presentationComponent
+}
+
+now all dialogs that extends this BaseDialog will be able to get this presentationComponent, 
+
+using the above BaseDialog we refactor ServerErrorDialogFragment
+
+
+
+In future, if we define some complex dialogs which extends the BaseDialog will be able to access / services can be injected which are in the object graph of the PresentationComponent, since presentationCOmponent is available inside the Dialogs and its available in parent(BaseDialog). To inject the services into the Dialogs, we can define the inject method/target of the client(like we did for QuestionDetailsActivity "fun inject(activity: QuestionDetailsActivity)") inside PresentationComponent.
+
+
+
+----------------------------------------------------------------------------------------------------------
+                            STATIC PROVIDER METHODS AND COMPONENT BUILDERS
+----------------------------------------------------------------------------------------------------------
+
+This lecture is to help dagger to provide more enhanced/performant code by making the provider methods in modules as static.
+
+As static convention is not available in Kotlin, we expose the provider methods (@Provides) in modules via  "companion objects" which is equivalent to static in Java,
+
+@Module
+class ActivityModule(
+        val activity: AppCompatActivity
+) {
+    @Provides
+    fun activity() = activity // we cant provide this method inside companion object as its has bootstrap           
+                                //dependencies ("activity" instance), cannot reference a "non-static" activity 
+                                // property inside a static context.
+
+    companion object {
+        @Provides
+        @ActivityScope
+        fun screensNavigator(activity: AppCompatActivity) = ScreensNavigator(activity)
+
+        @Provides
+        fun layoutInflater(activity: AppCompatActivity) = LayoutInflater.from(activity)
+
+        @Provides
+        fun fragmentManager(activity: AppCompatActivity) = activity.supportFragmentManager
+    }
+}
+
+
+we have no choice to get the "activity" instance as a boot-strap dependency into the ActivityModule and again
+Provide using @Provide with in the ActivityModule for the dependencies to be build inside the ActivityModule.
+Also we cant move the method inside the companion object.
+
+But we cant pass the boot-straping dependencies which is passed as constructor to Modules into the "companion objects". Because of this restriction we follow some guidelines or use some additional Dagger conventions to inject the bootstrapping dependencies directly into the component when building it so that it will be available or added into the object graph of the component so that it will also be available to the Modules, instead of passing into the constructor of the modules when constructing the component.
+
+Introduce a Builder inside the Component in which we use the above module, in our case we use ActivityModule in the
+ActivityComponent. We introduce builder method inside the ActivityComponent
+
+@ActivityScope
+@Subcomponent(modules = [ActivityModule::class])
+interface ActivityComponent {
+
+    fun newPresentationComponent(): PresentationComponent
+
+    @Subcomponent.Builder
+    interface Builder {
+        fun activityModule(activityModule: ActivityModule): Builder
+        fun build(): ActivityComponent  
+    }               
+}
+
+"@Subcomponent.Builder"
+Explanation: ActivityComponent is @Subcomponent, Hence we use "@SubComponent.Builder" for introducing a builder inside the ActivityComponent. If ActivityComponent is standalone @Component we use @Component.Builder
+        
+
+"fun activityModule(activityModule: ActivityModule): Builder" 
+
+Explanation : This method will return a same Builder instance, because its needed to chain the build operation of ActivityComponent. This method used to inject ActivityModule when building the ActivityComponent, ActivityComponent needs ActivityModule to build.
+
+"fun build(): ActivityComponent"
+Explanation : This method will build and return the ActivityComponent.
+
+This additional convention are "@Subcomponent.Builder, @Component.Builder, @BindsInstance", these will help to inject the bootstrap dependencies of the Modules directly into the component when its built.
+
+
+-------------------- If the Component(ActivityComponent) contains a Builder defined with in it, 
+
+then we can't create the instance of the Component Directly if its a Component(like AppComponent) or if its a Subcomponent(ActivityComponent) we can't create the Subcomponent(ActivityComponent) instance with the factory method defined in the Component(AppComponent). 
+
+We can only be able to create the instance of the ActivityComponent only with the Builder defined with in the Component.-----------------
+
+
+Since ActivityComponent is a SubComponent we have a factoryMethod defined inside the Component(AppComponent) in order to create instance of the ActivityCOmponent
+
+@AppScope
+@Component(modules = [AppModule::class])
+interface AppComponent {
+
+    fun newActivityComponent(activityModule: ActivityModule): ActivityComponent // factory method to create 
+    fun newServiceComponent(serviceModule: ServiceModule): ServiceComponent
+}
+
+Now, since we define a Builder inside the ActivityComponent, we cant construct ActivityComponent Directly, we only can construct the Builder defined with in the ActivityComponent, using that Builder instance we can further construct the instance of ActivityComponent. Hence we have to change the factory method signature  to create ActivityComponent instance defined inside AppComponent
+
+@AppScope
+@Component(modules = [AppModule::class])
+interface AppComponent {
+
+    fun newActivityComponentBuilder(): ActivityComponent.Builder
+    fun newServiceComponent(serviceModule: ServiceModule): ServiceComponent
+}
+
+// now we change the code which will build the ActivityComponent in BaseActivity.kt
+
+class MyApplication: Application() {
+
+    public val appComponent: AppComponent by lazy {
+        DaggerAppComponent.builder()
+                .appModule(AppModule(this))
+                .build()
+    }
+}
+
+open class BaseActivity: AppCompatActivity() {
+
+    private val appComponent get() = (application as MyApplication).appComponent
+
+    val activityComponent by lazy {
+        appComponent
+                .newActivityComponentBuilder()
+                .activityModule(ActivityModule(this))
+                .build()
+    }
+}
+
+// our goal is to avoid construction parameter of ActivityModule which is a bootstrap dependency for
+ActivityModule which restricts @Provides (activity() method) to put inside "companion object". Because of avoiding
+providing boot-strap dependency into the ActivityModule we start introducing Builder inside ActivityComponent which
+helps to build ActivityComponent. The builder can be used to provide ActivityModule and its boot-strap dependencies to builder itself to construct ActivityComponent, in this way we can avoid constructor parameter injection into the ActivityModule.
+
+
+In addition to passing modules into the component builders, we can also pass individual dependencies while building the component(in our case activity instance  is required by ActivityModule as boot-strap dependency) which are required to be passed when module instance is created, so that the passed dependencies will be added to the component graph, those will be automatically injected inside the modules when its built. Hence no need to pass the dependency into the modules via constructor.
+
+interface ActivityComponent {
+
+    fun newPresentationComponent(): PresentationComponent
+
+    @Subcomponent.Builder
+    interface Builder {
+        fun activity(activity:AppCompatActivity): Builder
+        fun activityModule(activityModule: ActivityModule): Builder
+        fun build(): ActivityComponent
+    }
+}
+
+
+"fun activity(activity:AppCompatActivity): Builder" is the builder method which will be helpful to pass the "dependencies of the ActivityModule" while buiilding the ActivityComponent. This method is to instruct Dagger to take the "activity" instance and put it on object graph and make it available to all other services that we provide.
+
+this is equivalent to passing activity instance into the ActivityModule via constructor and re-expose it via @Provide method for usage to other services.
+
+After introducing the dependencies builder method ("fun activity(activity:AppCompatActivity): Builder") we can remove the activity instance passed to ActivityModule via constructor and re-providing it inside the ActivityModule using @Provides
+
+we have to help Dagger to realize that, the introduced builder method is to provide dependencies object which is to be added to component object graph, and the method is not to provide module instance when building the Component, do differentiate the builder methods. We have to annotate such dependent object methods using "@BindsInstance" annotation. WIth this annotation Dagger will realize that the method is used to add the function parameter provided dependent objects into the Component graph.
+
+Now, we can remove the constructor injected dependencies for activityModule, because its already provided when building the ActivityComponent, its already available in ActivityComponent graph which can be shared or automatically injected by Dagger to all the services described in all the Modules used by ActivityComponent
+
+// now constructor provided "activity" instance into the ActivityModule and re-exposing the "activity" instance
+using @Provides method is not required because its already been provided using the ActivityComponent builder method
+when constructing the ActivityComponent
+
+@Module
+class ActivityModule(
+) {
+    companion object {
+        @Provides
+        @ActivityScope
+        fun screensNavigator(activity: AppCompatActivity) = ScreensNavigator(activity)
+
+        @Provides
+        fun layoutInflater(activity: AppCompatActivity) = LayoutInflater.from(activity)
+
+        @Provides
+        fun fragmentManager(activity: AppCompatActivity) = activity.supportFragmentManager
+    }
+}
+
+// code need to be change in the way of building the ActivityComponent in BaseActivity
+
+open class BaseActivity: AppCompatActivity() {
+
+    private val appComponent get() = (application as MyApplication).appComponent
+
+    val activityComponent by lazy {
+        appComponent
+                .newActivityComponentBuilder()
+                .activity(this)                      // <--- now we pass "activity" instance directly when
+                .activityModule(ActivityModule())   // building ActivityComponent which will be added into the 
+                .build()                           // ActivityComponent object graph, instead of passing the
+    }                                            // "activity" instance into the ActivityModule constructor
+}
+
+
+// since ActivityModule doesnt have constructor parameters we dont need to explicitly create instance of
+ActivityModule and pass it when constructing ActivityComponent, Dagger created with in itself automatically.
+
+
+open class BaseActivity: AppCompatActivity() {
+
+    private val appComponent get() = (application as MyApplication).appComponent
+
+    val activityComponent by lazy {
+        appComponent
+                .newActivityComponentBuilder()
+                .activity(this)                      
+                .build()      
+    }                         
+}
+
+Since ActivityModule has only a "companion object" with in itself, we can rather make the ActivityModule into a "object" rather as a "class". 
+
+@Module
+object ActivityModule {
+        @Provides
+        @ActivityScope
+        fun screensNavigator(activity: AppCompatActivity) = ScreensNavigator(activity)
+
+        @Provides
+        fun layoutInflater(activity: AppCompatActivity) = LayoutInflater.from(activity)
+
+        @Provides
+        fun fragmentManager(activity: AppCompatActivity) = activity.supportFragmentManager
+}
+
+
+// now ActivityModule is not a "class", its an "object", when creating/constructing ActivityComponent
+now we should pass activityModule object, but not create an instance of ActivityModule
+
+
+open class BaseActivity: AppCompatActivity() {
+
+    private val appComponent get() = (application as MyApplication).appComponent
+
+    val activityComponent by lazy {
+        appComponent
+                .newActivityComponentBuilder()
+                .activity(this)
+                .activityModule(ActivityModule) // passed ActivityModule is an object, not instantiating it
+                .build()
+    }
+
+}
+
+***Summary***
+
+    *   Dagger generates more performant code for static providers in Modules (use companion object or top-level
+    object in kotlin). (when making all provider methods of Modules as static(companion object), it will be problamatic to put boot-strapping dependencies on the object graph if we just inject(provide via constructor parameter) them into modules when its instance is created when constructing Component). To avoid providing the boot-strapping dependencies provided to modules via constructor, we go for @Component.Builder convention in Dagger.
+
+    *   @Component.Builder( or @SubComponent.Builder) designates inner builder interface for Component (on that interface, we can define methods to actually build something to injecct module and also @BindsInstance annotation methods)
+
+    * @BindsInstance allows for injection of "bootstrapping dependencies" directly into the ComponentBuilders (can put "activity" instance in component object graph and its not required to pass "activity" instance as boot-strapping dependencies into the modules and by using this approach all @Provides methods defined inside the modules will become eligible to be in "companion object" / static methods, because no more boot-strapping dependencies), following this way will make the all @Provides method in module will be eleigible to move into "Object" or "companion Object" which inturn make Dagger to produce more performant code.
+
+
+----------------------------------------------------------------------------------------------------------
+                                        TYPE BINDINGS
+----------------------------------------------------------------------------------------------------------
+
+Introduces a new annotation called "@Binds" - which allows to map specific provided type to another provided type(Eg: provide implementation of an Interface).
+
+When we add objects into components object graph, and if we want those objects to be automatically injected into the client fields(which are Interface but not a concrete Implementations). We need to specify or convey to Dagger to Inject a specific concrete Implmentation in the component Object graph into the required Interface fields of the clients. Basically we can use @Binds to map a particular type of object into another particular type.
+
+We can see an exapmle about the way of using @Binds into our project.
+
+We try to extract an interface from ScreensNavigator class, to see the usage of @Binds
+
+interface ScreensNavigator {
+    fun navigateBack()
+    fun toQuestionDetails(questionId: String)
+}
+
+"ScreensNavigatorImpl" is the implementation class of ScreensNavigator Interface, we use this instance only in 
+QuestionDetailsActivity and QuestionListFragment class (These 2 classes are clients of DI).
+
+class ScreensNavigatorImpl (private val activity: AppCompatActivity) : ScreensNavigator{
+
+    override fun navigateBack() {
+        activity.onBackPressed()
+    }
+
+    override fun toQuestionDetails(questionId: String) {
+        QuestionDetailsActivity.start(activity, questionId)
+    }
+}
+
+
+// The module which provide this ScreensNavigator instance is 
+
+@Module
+object ActivityModule {
+        @Provides
+        @ActivityScope
+        fun screensNavigator(activity: AppCompatActivity) = ScreensNavigatorImpl(activity)
+
+        @Provides
+        fun layoutInflater(activity: AppCompatActivity) = LayoutInflater.from(activity)
+
+        @Provides
+        fun fragmentManager(activity: AppCompatActivity) = activity.supportFragmentManager
+}
+
+// Clients who are using this ScreensNavigator instance are
+
+class QuestionDetailsActivity : BaseActivity(), QuestionDetailsViewMvc.Listener {
+
+    @Inject lateinit var screensNavigator: ScreensNavigator // the object type is ScreensNavigator(I)
+}
+
+class QuestionsListFragment : BaseFragment(), QuestionsListViewMvc.Listener {
+
+    @Inject lateinit var screensNavigator: ScreensNavigator
+
+}
+
+
+// Building projecct, we get error. Because in ActivityModule we return or @Provide ScreensNavigatorImpl instance to Dagger, but here in Client(QuestionDetailsActivity and QuestionListFragment) we expect ScreensNavigator(I) instance to be injected by Dagger.
+
+To solve this issue, we can solve by making code changes in ActivityModule on the @Provides method of ScreensNavigator by making it to explicitly return ScreensNavigator(I) instead of returning ScreensNavigatorImpl
+
+@Module                                                         code change (mentioning explicit return type)
+object ActivityModule {                                            |
+        @Provides                                                  V
+        @ActivityScope
+        fun screensNavigator(activity: AppCompatActivity): ScreensNavigator = ScreensNavigatorImpl(activity)
+
+        @Provides
+        fun layoutInflater(activity: AppCompatActivity) = LayoutInflater.from(activity)
+
+        @Provides
+        fun fragmentManager(activity: AppCompatActivity) = activity.supportFragmentManager
+}
+
+
+When we use Interfaces / Abstract Classes, we need to clearly specify the return type of these providers to make Dagger know about mapping between interfaces and specific implementations
+
+Now if i decide not to expose / @Provide ScreensNavigator in ActivityModule, instead I want Dagger to know by itself using Automatic Service Discovery(using @Inject constructor) and remove the explicit declaration of ScreensNavigator in ActivityModule
+
+@ActivityScope
+class ScreensNavigatorImpl @Inject constructor(private val activity: AppCompatActivity) : ScreensNavigator{
+
+    override fun navigateBack() {
+        activity.onBackPressed()
+    }
+
+    override fun toQuestionDetails(questionId: String) {
+        QuestionDetailsActivity.start(activity, questionId)
+    }
+}
+
+// Now we can remove the @Provide method of ScreensNavigator in ActivityModule
+
+@Module
+object ActivityModule {
+
+        @Provides
+        fun layoutInflater(activity: AppCompatActivity) = LayoutInflater.from(activity)
+
+        @Provides
+        fun fragmentManager(activity: AppCompatActivity) = activity.supportFragmentManager
+}
+
+// Now build fails, because using the above methodology. I provide ScreensNavigatorImpl object to Dagger and its maintained in object graph. But client(QuestionDetailsActivity and QuestionListFragment) expect ScreensNavigator(I)
+Dagger dont know to map the instance of ScreensNavigatorImpl(having already in its object graph) to the required format(ScreensNavigator(I)) of clients expect.
+
+//Using a Dagger Convention (@Binds) we can let Dagger know about this mapping of ScreensNavigatorImpl to ScreensNavigator(I). Then Dagger gains knowledge and start Inject ScreensNavigatorImpl instance to ScreensNavigator(I) fields which clients(QuestionDetailsActivity and QuestionListFragment) expect.
+
+@Module
+object ActivityModule {
+        @Binds
+        abstract fun ScreensNavigatorMapping(screensNavigatorImpl: ScreensNavigatorImpl): ScreensNavigator
+
+        @Provides
+        fun layoutInflater(activity: AppCompatActivity) = LayoutInflater.from(activity)
+
+        @Provides
+        fun fragmentManager(activity: AppCompatActivity) = activity.supportFragmentManager
+}
+
+ @Binds
+"fun ScreensNavigatorMapping(screensNavigatorImpl: ScreensNavigatorImpl): ScreensNavigator",
+     is just a function declaration, it doesnt have a body. Hence we are forced to make the function declaration to "abstract". @Binds convention clearly tells that it a function declaration used to educate Dagger about the mapping of Object from ScreensNavigatorImpl to ScreensNavigator(I). The function declration can have any name, but the input parameter of the function should be the type whih Dagger receives in Object graph(ScreensNavigatorImpl) and the return type of function declaration should be the type which client expect (ScreensNavigator(I)).
+
+------Still code will not compile, class which has atleast one abstract method should be declared as abstract
+
+@Module
+abstract class ActivityModule {
+        @Binds
+        abstract fun ScreensNavigatorMapping(screensNavigatorImpl: ScreensNavigatorImpl): ScreensNavigator
+
+        @Provides
+        fun layoutInflater(activity: AppCompatActivity) = LayoutInflater.from(activity)
+
+        @Provides
+        fun fragmentManager(activity: AppCompatActivity) = activity.supportFragmentManager
+}
+
+once the class is made abstract, we cant instantiate this Module class object, which is required when the ActivityComponent is constructed.
+
+open class BaseActivity: AppCompatActivity() {
+
+    private val appComponent get() = (application as MyApplication).appComponent
+
+    val activityComponent by lazy {
+        appComponent
+                .newActivityComponentBuilder()
+                .activity(this)
+                .activityModule(ActivityModule()) // cant instantiate the ActivityModule instance
+                .build()
+    }
+}
+
+// removing instantiation of the ActivityModule(), which is not required because in Dagger we can avoid passing module if it doesnt have boot-strap dependencies.
+
+open class BaseActivity: AppCompatActivity() {
+
+    private val appComponent get() = (application as MyApplication).appComponent
+
+    val activityComponent by lazy {
+        appComponent
+                .newActivityComponentBuilder()
+                .activity(this)
+                .build()
+    }
+}
+
+// also we need to remove the method declaration to accept ActivityModule in ActivityComponent Builder, as we are not passing ActivityModule instance, we are supposed to remove the mthod declaration
+
+//ActivityComponent before code change 
+
+@ActivityScope
+@Subcomponent(modules = [ActivityModule::class])
+interface ActivityComponent {
+
+    fun newPresentationComponent(): PresentationComponent
+
+    @Subcomponent.Builder
+    interface Builder {
+        @BindsInstance fun activity(activity:AppCompatActivity): Builder
+        fun activityModule(activityModule: ActivityModule): Builder
+        fun build(): ActivityComponent
+    }
+}
+
+//ActivityComponent after code change ,removing method which accept activityModule while building ActivityComponent
+
+@ActivityScope
+@Subcomponent(modules = [ActivityModule::class])
+interface ActivityComponent {
+
+    fun newPresentationComponent(): PresentationComponent
+
+    @Subcomponent.Builder
+    interface Builder {
+        @BindsInstance fun activity(activity:AppCompatActivity): Builder
+        fun build(): ActivityComponent
+    }
+}
+
+------Still code will not compile, class which has atleast one abstract method should not contain non-static or instance methods like (layoutInflater and fragmentManager)
+
+@Module
+abstract class ActivityModule {
+        @Binds
+        abstract fun ScreensNavigatorMapping(screensNavigatorImpl: ScreensNavigatorImpl): ScreensNavigator
+
+        @Provides
+        fun layoutInflater(activity: AppCompatActivity) = LayoutInflater.from(activity)
+
+        @Provides
+        fun fragmentManager(activity: AppCompatActivity) = activity.supportFragmentManager
+}
+
+hence we wrap the instance / non-static methods in companion object and make it static methods. abstract class can contain abstract methods and static methods
+
+@Module
+abstract class ActivityModule {
+    @Binds
+    abstract fun ScreensNavigatorMapping(screensNavigatorImpl: ScreensNavigatorImpl): ScreensNavigator
+
+    companion object {
+        @Provides
+        fun layoutInflater(activity: AppCompatActivity) = LayoutInflater.from(activity)
+
+        @Provides
+        fun fragmentManager(activity: AppCompatActivity) = activity.supportFragmentManager
+    }
+}
+
+--- Everything works and now we are able to make dagger to inject existing objects(ScreensNavigatorImpl) in object graph into different ones which client expect (ScreensNavigator(I))
+
+
+Abstract Info of all the changes which we did::
+    we extracted an interface for ScreensNavigator(I) and had implemention of the extracted interface as ScreensNavigatorImpl. Inside the ScreensNavigatorImpl we used automatic service discovery using "@Inject constructor", hence we dont need to provide explicit @Provide method for ScreensNavigatorImpl. Dagger will discover its instance by itself and add it to the object graph, Also we annotated this ScreensNavigatorImpl class with @ActivityScope. Clients which expect to get the instance of ScreensNavigator(I) type instance, wont be able to get it because Dagger cant map from ScreensNavigator to a specific implementation(ScreensNavigatorImpl). 
+                            Therefore we need to somehow help Dagger to resolve this Mapping, simplest way to 
+    resolve this issue by providing explicit @Provide method for ScreensNavigator(I) that returns the type ScreensNavigator(I) explicitly.
+
+
+    @Module                                                         code change (mentioning explicit return type)
+    object ActivityModule {                                            |
+            @Provides                                                  V
+            @ActivityScope
+            fun screensNavigator(activity: AppCompatActivity): ScreensNavigator = ScreensNavigatorImpl(activity)
+
+    }
+
+    If we dont want to construct ScreensNavigatorImpl explicitly (Eg: If ScreensNavigatorImpl has toomany constructor arguments and we dont want to Instiantiate it explicitly in ActivityModule), Then in this case we use convention "@Binds", we specify @Binds method declaration(abstract function) and the argument to this function is the type that we want to provide(ScreensNavigatorImpl) and the return type of this function declaration is of the type that client expect. Whenever clients(QuestionsListFragment/ QuestionDetailsActivity) require ScreensNavigator(I) instance, Dagger will inject ScreensNavigatorImpl  instance. We have to make this method declaration as "abstract" because it doesnt have a body(we just need to mention the type of input parameter to function and the type of return value of function). consequently the Module has to be "abstract class", In abstract class we cant have non-static/instance methods, Hence the other @Provide services(layoutInflater and fragmentManager) in the module has to be put into companion-object to make it as static access. this way of providing services inside static access(into companion object), Dagger generates nore-effecient code for these services. Its always better to annotate @Scope annotation for services in Modules rather than mentioning at class(if the class is defined as automatic service discovery using "@Inject constructor), which give more readability when developers reads the Modules they will instantly get to know the list of services which are scoped.
+
+    There is difference in annotating @ActivityScope between class level and services in Modules
+
+    Annotating at class level:
+    -----------------------------------------
+    
+    @ActivityScope
+    class ScreensNavigatorImpl @Inject constructor(private val activity: AppCompatActivity) : ScreensNavigator{
+
+    }
+
+
+    @Module
+    abstract class ActivityModule {
+
+    @Binds
+    abstract fun ScreensNavigatorMapping(screensNavigatorImpl: ScreensNavigatorImpl): ScreensNavigator
+
+    }
+
+    Whenever Dagger needs a instance of ScreensNavigatorImpl to inject it, dagger always return the same object of 
+    ScreensNavigatorImpl with in the scope of specific activity.
+
+    Annotating at services exposed in Module:
+    -----------------------------------------
+
+    @Module
+    abstract class ActivityModule {
+    
+    @ActivityScope
+    @Binds
+    abstract fun ScreensNavigatorMapping(screensNavigatorImpl: ScreensNavigatorImpl): ScreensNavigator
+
+    }
+
+
+    class ScreensNavigatorImpl @Inject constructor(private val activity: AppCompatActivity) : ScreensNavigator{
+
+    }
+
+    Now @ActivityScope annotation is only applied to ScreensNavigator(I) instance. Therefore, if clients request 
+    ScreensNavigatorImpl to be injected. In this case new instances of screensNavigator will be created and Injected by Dagger, because now ScreensNavigatorImpl is not @ActivityScope only ScreensNavigator(I) is @ActivityScope.
+
+
+    Hence, currently we provide ScreensNavigationImpl(ScreensNavigator(I) implementation) while also making use of Dagger Automatic service discovery to construct and inject ScreensNavigator implementation.
+
+    Summary of @Binds annotation:
+    --------------------------------
+
+        *   @Binds allows to map specific provided type(ScreensNavigatorImpl) to another provided type(ScreensNavigator(I)). (Eg: provide implementation of interface).
+
+        *   Custom bindings using @Binds must be defined as abstract functions(abstract fun ScreensNavigatorMapping) in abstract modules(abstract class ActivityModule).
+
+        *   Abstract @Binds functions can't coexist with non-static provider methods(fragmentManager, layoutInflater) in the same module. Hence need to move those non-static services inside "companion object" to make it static
+
+
+----------------------------------------------------------------------------------------------------------
+                                        QUALIFIERS
+----------------------------------------------------------------------------------------------------------
+@Qualifier will help Dagger to make difference between objects of same type that inturn help in right injection.
+
+When we are in a need to inject multiple variants of same service (Eg: we need a retrofit instance for different URL's, we might create a instance of different retrofit instances for different end points) In that case we cant create a service in module class with @Provide methods for this different instances of retrofit. Dagger needs to identify differenc between objects instances, it will identify based on the object type(Retrofit / LayoutManager / FragmentManager). It cannot identify the difference in different Retrofit object with different URL's. We can add the @Qualifier annotation to help dagger in finding the difference, this @Qualifier will add itself to the object type and making the difference for the Dagger to find out. 
+
+Eg: In AppModule we have a explicit provider for Retrofit object 
+
+@Module
+class AppModule(val application: Application) {
+
+    @Provides
+    @AppScope
+    fun retrofit(): Retrofit {
+        return Retrofit.Builder()
+                .baseUrl(Constants.BASE_URL)
+                .addConverterFactory(GsonConverterFactory.create())
+                .build()
+    }
+
+    @Provides
+    @AppScope
+    fun stackoverflowApi(retrofit: Retrofit) = retrofit.create(StackoverflowApi::class.java)
+
+}
+
+// in some apps, it needs to communicate to more than one backend. Therefore app needs more than one retrofit objects with different backend endpoints.
+
+// If we try to expose different instance of retorfit with different URL's,like below
+
+@Module
+class AppModule(val application: Application) {
+
+    @Provides
+    @AppScope
+    fun retrofit1(): Retrofit {
+        return Retrofit.Builder()
+                .baseUrl(Constants.BASE_URL)
+                .addConverterFactory(GsonConverterFactory.create())
+                .build()
+    }
+
+    @Provides
+    @AppScope
+    fun retrofit2(): Retrofit {
+        return Retrofit.Builder()
+                .baseUrl("other_base_url")
+                .addConverterFactory(GsonConverterFactory.create())
+                .build()
+    }
+
+    @Provides
+    @AppScope
+    fun stackoverflowApi(retrofit: Retrofit) = retrofit.create(StackoverflowApi::class.java)
+}
+
+// we get dagger build error, saying that "Retrofit is bound multiple times". Dagger complains that Retrofit instance is bind multiple times(means it's not able to distinguish the different between the instances, hence it can correctly inject at right location). 
+
+We can solve this issue using a different annotation in Dagger, using @Qualifiers
+
+Create a new annotation class with a @Qualifier annotation. now the class name can be used 
+as "Qualifier annotation"
+
+"Retrofit1.kt"
+
+@Qualifier
+annotation class Retrofit1 {
+}
+
+In AppModule, annotate one of the Retrofit instance with the created "Qualifier annotation"
+
+@Module
+class AppModule(val application: Application) {
+
+    @Provides
+    @AppScope
+    @Retrofit1
+    fun retrofit1(): Retrofit {
+        return Retrofit.Builder()
+                .baseUrl(Constants.BASE_URL)
+                .addConverterFactory(GsonConverterFactory.create())
+                .build()
+    }
+
+    @Provides
+    @AppScope
+    fun retrofit2(): Retrofit {
+        return Retrofit.Builder()
+                .baseUrl("other_base_url")
+                .addConverterFactory(GsonConverterFactory.create())
+                .build()
+    }
+
+    @Provides
+    @AppScope
+    fun stackoverflowApi(retrofit: Retrofit) = retrofit.create(StackoverflowApi::class.java)
+
+}
+
+//Now build will pass, because retrofit1 instance is indenfied by dagger as "Retrofit1.Retrofit" instance and
+retrofit2() instance is identified as Retrofit instance, client of Retrofit instance which is stackoverflowApi in this case should be defined to inject the right instance, in the above code we could see stackoverflowApi is expecting "Retrofit" instance, hence retrofit2() service will be injected by Dagger.
+
+For trial, if we remove the code for retrofit2() in AppModule. and build the code.
+
+@Module
+class AppModule(val application: Application) {
+
+    @Provides
+    @AppScope
+    @Retrofit1
+    fun retrofit1(): Retrofit {
+        return Retrofit.Builder()
+                .baseUrl(Constants.BASE_URL)
+                .addConverterFactory(GsonConverterFactory.create())
+                .build()
+    }
+
+    @Provides
+    @AppScope
+    fun stackoverflowApi(retrofit: Retrofit) = retrofit.create(StackoverflowApi::class.java)
+
+}
+
+// Build fails, Dagger complains that client stackoverflowApi is expecting Retrofit instance, but it doesnt have Retrofit instance in its object graph(we removed code of retrofit2() @Provide method), It has only "Retrofit1.Retrofit" / "Retrofit Qualified with Retrofit1 Qualifier" instance in objet graph. Hence the build fails.
+
+fun retrofit1() is providing "Retrofit Qualified with Retrofit1 Qualifier" instance.
+
+To make the client stackoverflowApi() to accept "Retrofit Qualified with Retrofit1 Qualifier" instance, instead of expecting "Retrofit" instance. We need to annotate @Retrofit1 annotation at all the places where Retrofit instance is expected(in our case "fun stackoverflowApi(retrofit: Retrofit)" is expecting its input parameter as "Retrofit" instance), so that the relevent client service agree to accept Retrofit1.Retrofit instance instead of "Retrofit"
+instance.
+
+@Module
+class AppModule(val application: Application) {
+
+    @Provides
+    @AppScope
+    fun retrofit1(): Retrofit {
+        return Retrofit.Builder()
+                .baseUrl(Constants.BASE_URL)
+                .addConverterFactory(GsonConverterFactory.create())
+                .build()
+    }
+
+    @Provides
+    @AppScope
+    fun stackoverflowApi(@Retrofit1 retrofit: Retrofit) = retrofit.create(StackoverflowApi::class.java)
+}
+
+Now client accepts @Retrofit.Retrofit instance, hence theres no problem for dagger to inject it. Qualifier name(Retrofit1) will become part of the Retrofit object type, now the service/ object instance provided by retrofit1() and service / object instance expect by stackoverflowApi() is same.
+
+fun stackoverflowApi(@Retrofit1 retrofit: Retrofit)
+
+
+// if we compile the below code, we get error.-------------------------------------
+
+@Module
+class AppModule(val application: Application) {
+
+    @Provides
+    @AppScope
+    fun retrofit1(): Retrofit {
+        return Retrofit.Builder()
+                .baseUrl(Constants.BASE_URL)
+                .addConverterFactory(GsonConverterFactory.create())
+                .build()
+    }
+
+    @Provides
+    @AppScope
+    fun stackoverflowApi(@Retrofit1 retrofit: Retrofit) = retrofit.create(StackoverflowApi::class.java)
+}
+
+Because retrofit1() method is providing Retrofit instance(we removed @Retrofit1 qualifier) to Dagger. But stackoverflowApi(@Retrofit1 retrofit: Retrofit) is expecting Retrofit1.Retrofit instance, which dagger is not able to provide because its not there in object graph and no services provide Retorfit1.Retrofit instance.
+
+Qualifiers become part of the type, using qualifiers we can distinguish between different services that have exactly the same type. 
+
+//----------------------- different case ------- applying qualified name for all Retrofit objects
+
+Create a new annotation class with a @Qualifier annotation. now the class name can be used 
+as "Qualifier annotation"
+
+"Retrofit2.kt"
+
+@Qualifier
+annotation class Retrofit2 {
+}
+
+@Module
+class AppModule(val application: Application) {
+
+    @Provides
+    @AppScope
+    @Retrofit1
+    fun retrofit1(): Retrofit {
+        return Retrofit.Builder()
+                .baseUrl(Constants.BASE_URL)
+                .addConverterFactory(GsonConverterFactory.create())
+                .build()
+    }
+
+    @Provides
+    @AppScope
+    @Retrofit2
+    fun retrofit2(): Retrofit {
+        return Retrofit.Builder()
+                .baseUrl("some_different_endpoint")
+                .addConverterFactory(GsonConverterFactory.create())
+                .build()
+    }
+
+    @Provides
+    @AppScope
+    fun stackoverflowApi(@Retrofit2 retrofit: Retrofit) = retrofit.create(StackoverflowApi::class.java)
+}
+
+in above code we can see, retrofit1() is providing "Retrofit1.Retrofit" instance and retrofit2() is providing "Retrofit2.Retrofit" instance and client("stackoverflowApi") is expecting "Retrofit2.Retrofit" instance.
+
+If client expects only Retrofit instance as in below code
+
+
+    @Provides
+    @AppScope
+    fun stackoverflowApi(retrofit: Retrofit) = retrofit.create(StackoverflowApi::class.java)
+
+Now the problems is, client("stackoverflowApi") is expecting "Retrofit" instance. But retrofit1() is providing "Retrofit1.Retrofit" instance and retrofit2() is providing "Retrofit2.Retrofit" instance. No services in AppComponent is providing "Retrofit" instance.
+
+
+The Qualifier which we used above are Custom Qualifiers,
+
+-------------------------------------------------------------------------------------------------------
+----------- INBUILT QUALIFIERS WHICH COMES AS PART OF JAVAX INJECT PACKAGE ----------------------------
+-------------------------------------------------------------------------------------------------------
+
+This qualifier is commonly available in all DIF(Dependency Injection Frameworks) like Dagger which supports / Run on Java Virtual machine. is @Named("Qualifier Name")
+
+
+We dont need to create a seperate annotation class like we did on custom qualifiers, we can use directly at service itself by mentioning qualifier name as string in the argument
+
+@Module
+class AppModule(val application: Application) {
+
+    @Provides
+    @AppScope
+    @Named("retrofit1")
+    fun retrofit1(): Retrofit {
+        return Retrofit.Builder()
+                .baseUrl(Constants.BASE_URL)
+                .addConverterFactory(GsonConverterFactory.create())
+                .build()
+    }
+
+    @Provides
+    @AppScope
+    @Named("retrofit2")
+    fun retrofit2(): Retrofit {
+        return Retrofit.Builder()
+                .baseUrl("some_different_endpoint")
+                .addConverterFactory(GsonConverterFactory.create())
+                .build()
+    }
+
+    @Provides
+    @AppScope
+    fun stackoverflowApi(@Named("retrofit2") retrofit: Retrofit) = retrofit.create(StackoverflowApi::class.java)
+}
+
+the argument which we pass is case-sensitive and thats a problem if we make mistake in names, we face issues in building or we face issues by mistakenly assigning names to fields. We have to keep track of the names properly.
+
+Using explicit custom qualifiers, the name of class becomes the qualifier and autocompletion will help. its much more robust and much more readable and also maintenable. 
+
+Common Abuse of using Named Qualifier:
+---------------------------------------
+
+When we try to use Named qualifier for the URL also in retrofit instances, like the code below
+
+
+@Module
+class AppModule(val application: Application) {
+
+    @Provides
+    @AppScope
+    @Named("retrofit1")
+    fun retrofit1(@Named("base_Url") baseUrl: String): Retrofit {
+        return Retrofit.Builder()
+                .baseUrl(baseUrl)
+                .addConverterFactory(GsonConverterFactory.create())
+                .build()
+    }
+
+    @Provides
+    @AppScope
+    @Named("retrofit2")
+    fun retrofit2(@Named("other_base_url") baseUrl: String): Retrofit {
+        return Retrofit.Builder()
+                .baseUrl(baseUrl)
+                .addConverterFactory(GsonConverterFactory.create())
+                .build()
+    }
+
+    @Provides
+    @Named("base_url")
+    fun baseUrl() = Constants.BASE_URL            // this method will provide BASE_URL into the retrofit1()
+                                                  // since it returns a string like otherBaseUrl(), we used
+                                                  //Named qualifier("base_url") for it
+
+
+    @Provides
+    @Named("other_base_url")
+    fun otherBaseUrl() = "some_different_endpoint"  // this method will provide BASE_URL into the retrofit2()
+                                                  // since it returns a string like baseUrl(), we used
+                                                  //Named qualifier("other_base_url") for it
+
+    @Provides
+    @AppScope
+    fun stackoverflowApi(@Named("retrofit2") retrofit: Retrofit) = retrofit.create(StackoverflowApi::class.java)
+
+}
+
+// the Abuse we did in the above code is, Retrofit is an object, stackoverflow is an object. But Strings are not objects(which we return in baseUrl() and otherBaseUrl()), these are DataStructures. If we use Named qualifiers to put Strings in our object graph, we violate by putting DataStructures in our object graph. DependencyInjection is about objects, DependencyInjection should not know anything about data(DataStructures) in construction set. Strings are DataStructures. Adding Strings/DataStructures in DependencyInjection object graph is Abuse.
+
+This pattern of injecting String / Datastructures in DependencyInjection object graph is very popular approach. But its an Abuse in DependencyInjection world. We shouldnt follow this approach. 
+
+we can Handle the way of providing Strings/Datastructures in a different way, but not using @Provides / @Named convention of injecting into DependencyInjection object graph.
+
+
+Create a seperate class which returns baseUrl string as seperate functions
+
+class UrlProvider {
+    fun getBaseUrl1(): String{
+        return Constants.BASE_URL
+    }
+
+    fun getBaseUrl2(): String{
+        return "base_url"
+    }
+}
+
+expose a provider method in AppModule and provide the Above class as an object to the retrofit1() and retrofit2()
+methods and with the UrlProvider instance we can get the respective baseUrl strings and use it respectively.
+
+@Module
+class AppModule(val application: Application) {
+
+    @Provides
+    @AppScope
+    @Named("retrofit1")
+    fun retrofit1(urlProvider: UrlProvider): Retrofit {
+        return Retrofit.Builder()
+                .baseUrl(urlProvider.getBaseUrl1())      // we get URL String from urlProvider injected object
+                .addConverterFactory(GsonConverterFactory.create())
+                .build()
+    }
+
+    @Provides
+    @AppScope
+    @Named("retrofit2")
+    fun retrofit2(urlProvider: UrlProvider): Retrofit {
+        return Retrofit.Builder()
+                .baseUrl(urlProvider.getBaseUrl2())     // we get URL String from urlProvider injected object
+                .addConverterFactory(GsonConverterFactory.create())
+                .build()
+    }
+
+    @AppScope
+    @Provides
+    fun urlProvider() = UrlProvider()                  //urlProvider instance is made available to Dagger
+
+    @Provides
+    @AppScope
+    fun stackoverflowApi(@Named("retrofit1") retrofit: Retrofit) = retrofit.create(StackoverflowApi::class.java)
+
+}
+
+
+
+// Using Custom Qualifiers, AppModule code appears like 
+
+@Module
+class AppModule(val application: Application) {
+
+    @Provides
+    @AppScope
+    @Retrofit1                                                                //Custom Qualifier
+    fun retrofit1(urlProvider: UrlProvider): Retrofit {
+        return Retrofit.Builder()
+                .baseUrl(urlProvider.getBaseUrl1())
+                .addConverterFactory(GsonConverterFactory.create())
+                .build()
+    }
+
+    @Provides
+    @AppScope
+    @Retrofit2
+    fun retrofit2(urlProvider: UrlProvider): Retrofit {
+        return Retrofit.Builder()
+                .baseUrl(urlProvider.getBaseUrl2())
+                .addConverterFactory(GsonConverterFactory.create())
+                .build()
+    }
+
+    @AppScope
+    @Provides
+    fun urlProvider() = UrlProvider()
+
+    @Provides
+    @AppScope
+    fun stackoverflowApi(@Retrofit1 retrofit: Retrofit) = retrofit.create(StackoverflowApi::class.java)
+
+    @Provides
+    fun application() = application
+
+}
+
+
+// Making UrlProvider as a standalone class to prvode Url string(data structure) is more handy for future changes, if the strings are composed dynamically, the code complexity is seperated into a standalone class which avoids of all the complex code to be defined in appModule. Its made as a seperate class which is helpful in making unit testing, all clients and provider methods of modules are unaffected by the change of algorithm/code for creating the Url in UrlProvider class.
+
+
+------Summary of Qualifiers -------------
+    *   Qualifiers are annotation classes annotated with @Qualifier
+
+    *   From Dagger's standpoint, qualifiers are part of the type(eg: @Q1Service and @Q2Service are different types)
+
+    *   you can use the standard @Named(String) qualifier. // recommended not to use it
+
+
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+                                        PROVIDERS
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+Providers can be used for late injection by dagger, it injects dymanic instance of the requested type of object based on the Scope mentioned for the object. (Factory can be used to get the instance of object dynamically, Eg: ViewMvcFactory returns the instance of ViewMvcInstance of QuestionsListView and QuestionDetailsView)
+
+class ViewMvcFactory @Inject constructor(
+        private val layoutInflater: LayoutInflater,
+        private val imageLoader: ImageLoader
+) {
+                                                                            //returns
+    fun newQuestionsListViewMvc(parent: ViewGroup?): QuestionsListViewMvc { //instance of QuestionsListViewMvc
+        return QuestionsListViewMvc(layoutInflater, parent)
+    }
+                                                                                // returns
+    fun newQuestionDetailsViewMvc(parent: ViewGroup?): QuestionDetailsViewMvc {//instance of QuestionDetailsViewMvc
+        return QuestionDetailsViewMvc(layoutInflater, imageLoader, parent)
+    }
+}
+
+
+Dagger will have single instance of ViewMvcFactory and from that instance(layoutInflater and imageLoader are fields stored/maintained on construction of viewMvcFactory and both the objects will be shared and used by all methods in ViewMvcFactory). Calling methods of ViewMvcFactory will create new instance of respective method return values and parameter of the method are passed from the ViewMvcFactory Fields.
+
+
+Factories are used to instantiate new objects at runtime, Factories scope their dependencies(construtor fields / constructor passed values), All MvcView which are returned from a single instance of ViewMvcFactory will use the same instance of inageLoader.
+
+Let say If we dont want to share the ImageLoader instance among the factory methods(newQuestionsListViewMvc(), newQuestionDetailsViewMvc()) for each factory methods we want a new instance of ImageLoader instance. 
+We can solve this by passing ImageLoaderFactory to ViewMvcFactory instead of ImageLoader instance, inside ViewMvcFactory for each factory methods(newQuestionsListViewMvc(), newQuestionDetailsViewMvc()) we use the ImageLoaderFactory and get a new Instance of ImageLoader instance.
+
+Lets say the factory approach might not work because of Scope of ImageLoader class or future changes of Scope on ImageLoader class will lead to change in implementation of the Factory in using ImageLoader. 
+
+
+If our need inside ViewMvcFactory is to get the instance of the ImageLoader object (Defined as a Service/@Provide to Dagger which contain all applied charecteristics(like Scope)) like we get a instance from a explicitly defined service/@provide method from Component. 
+
+@PresentationScope
+@Subcomponent()
+interface PresentationComponent {
+    fun getImageLoader(): ImageLoader
+    fun inject(fragment: QuestionsListFragment)
+    fun inject(activity: QuestionDetailsActivity)
+    fun inject(questionsListActivity: QuestionsListActivity)
+}
+
+Pass the presentation component into the ViewMvcFactory and using the component instance inside ViewMvcFactory we can get the ImageLoader instance with the service method(getImageLoader() - we get newInstance of Imageloader if the ImageLoader is not Scoped, we get the same instance if the ImageLoader is Scoped). Hence we dont need to change ViewMvcFactory methods because of future change of Scope of ImageLoader class.
+
+The problem here is, we cant pass / inject components, as components are not available in Dagger object graph.
+
+"""If I want to get Dynamic instance(late injection) of Imageloader class inside ViewMvcFactory based on ImageLoader scope(we get newInstance of Imageloader if the ImageLoader is not Scoped, we get the same instance if the ImageLoader is Scoped), we can acheive it by using "Providers".""""
+
+"Provider" is not pure Dagger convention, its part of javax.Inject package.
+
+
+class ViewMvcFactory @Inject constructor(
+        private val layoutInflater: LayoutInflater,
+        private val imageLoaderProvider : Provider<ImageLoader>
+) {
+
+    fun newQuestionsListViewMvc(parent: ViewGroup?): QuestionsListViewMvc {
+        return QuestionsListViewMvc(layoutInflater, parent)
+    }
+
+    fun newQuestionDetailsViewMvc(parent: ViewGroup?): QuestionDetailsViewMvc {
+        return QuestionDetailsViewMvc(layoutInflater, imageLoaderProvider.get(), parent)
+    }
+}
+
+imageLoaderProvider: Provider<ImageLoader>  is not ImageLoader instance / ImageLoaderFactory instance. Its a Provider of type ImageLoader. when we call get() on that imageLoaderProvider we get new(not scoped) / re-use(scoped) instance of ImageLoader instance because  imageLoaderProvider is a Provider of type ImageLoader
+
+now whenever newQuestionDetailsViewMvc() method is called on ViewMvcFactory, at that time ImageLoader instance
+is fetching from Dagger object graph(reaching to DaggerCompositionRoot and asking for ImageLoader service), using Provider method (get()) based on the Object charecteristics the object will be fetched(same instance if the object is scoped, new instance if its not scoped).
+
+
+----------- To check ----------------
+
+class ViewMvcFactory @Inject constructor(
+        private val layoutInflater: LayoutInflater,
+        private val imageLoaderProvider : Provider<ImageLoader>
+) {
+
+    fun newQuestionsListViewMvc(parent: ViewGroup?): QuestionsListViewMvc {
+        return QuestionsListViewMvc(layoutInflater, parent)
+    }
+
+    fun newQuestionDetailsViewMvc(parent: ViewGroup?): QuestionDetailsViewMvc {
+        val imageLoader1 = imageLoaderProvider.get() // get same instance if ImageLoader class is Scoped
+        val imageLoader2 = imageLoaderProvider.get() // get different instance if ImageLoader is not Scoped
+        val imageLoader3 = imageLoaderProvider.get()
+        
+        return QuestionDetailsViewMvc(layoutInflater, imageLoaderProvider.get(), parent)
+    }
+}
+
+
+// Providers allow, to reach DaggerCompositionRoot and get specific type(ImageLoader) of services later after the injection took place, but it will keep all the charecteristics of these services (If the service is Scoped then pprovider will provide scoped service/ same instance, otherwise new instance).
+
+Its just to wrap the service with Provider like Provider<ImageLoader>, its good practice to wrap all the parameters of the factory inside the provider like 
+
+class ViewMvcFactory @Inject constructor(
+        private val layoutInflaterProvider: Provider<LayoutInflater>,
+        private val imageLoaderProvider : Provider<ImageLoader>
+) {
+
+    fun newQuestionsListViewMvc(parent: ViewGroup?): QuestionsListViewMvc {
+        return QuestionsListViewMvc(layoutInflaterProvider.get(), parent)
+    }
+
+    fun newQuestionDetailsViewMvc(parent: ViewGroup?): QuestionDetailsViewMvc {
+        return QuestionDetailsViewMvc(layoutInflaterProvider.get(), imageLoaderProvider.get(), parent)
+    }
+}
+
+------ ******** Summary ******** ----------------
+    
+    *   Provider<Type> wrappers are "windows" into Dagger's object graph and allow you to retrieve a single type of Services.
+
+    *   Providers are basically "extensions" of composition roots. ( using providers we get access to compositionroot, but we can fetch only single type of services, In our case we specified the Provider is of type <ImageLoader> and hence we can fetch instance / get service of ImageLoader object)
+    
+    *   You use provider when you need to perform "late Injection" (Factories are ultimate example of Provider)
